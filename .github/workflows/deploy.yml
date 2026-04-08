@@ -1,0 +1,88 @@
+name: Build & Deploy to AWS ECS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: eu-west-2
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.eu-west-2.amazonaws.com
+  API_REPO: taranis-dataroom/api
+  WEB_REPO: taranis-dataroom/web
+  ECS_CLUSTER: taranis-dataroom
+  ECS_SERVICE: taranis-dataroom-service
+  TASK_DEFINITION: taranis-dataroom
+
+jobs:
+  build-and-deploy:
+    name: Build images and deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push API image
+        working-directory: packages/api
+        run: |
+          docker build -t ${{ env.ECR_REGISTRY }}/${{ env.API_REPO }}:latest \
+                       -t ${{ env.ECR_REGISTRY }}/${{ env.API_REPO }}:${{ github.sha }} .
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.API_REPO }} --all-tags
+
+      - name: Build and push Web image
+        working-directory: packages/web
+        run: |
+          docker build -t ${{ env.ECR_REGISTRY }}/${{ env.WEB_REPO }}:latest \
+                       -t ${{ env.ECR_REGISTRY }}/${{ env.WEB_REPO }}:${{ github.sha }} .
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.WEB_REPO }} --all-tags
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.TASK_DEFINITION }} \
+            --query taskDefinition \
+            --output json > task-def.json
+
+      - name: Update API container image in task definition
+        id: render-api
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name: api
+          image: ${{ env.ECR_REGISTRY }}/${{ env.API_REPO }}:${{ github.sha }}
+
+      - name: Update Web container image in task definition
+        id: render-web
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-api.outputs.task-definition }}
+          container-name: web
+          image: ${{ env.ECR_REGISTRY }}/${{ env.WEB_REPO }}:${{ github.sha }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-web.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Summary
+        run: |
+          echo "### Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **API Image**: ${{ env.ECR_REGISTRY }}/${{ env.API_REPO }}:${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Web Image**: ${{ env.ECR_REGISTRY }}/${{ env.WEB_REPO }}:${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cluster**: ${{ env.ECS_CLUSTER }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service**: ${{ env.ECS_SERVICE }}" >> $GITHUB_STEP_SUMMARY

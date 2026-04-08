@@ -1,0 +1,40 @@
+/* Taranis Capital — global overrides */
+
+:root {
+  --taranis-green-dark: #2C3E35;
+  --taranis-green-mid: #3A5247;
+  --taranis-gold: #C9A84C;
+  --taranis-gold-light: #D4B65E;
+  --taranis-charcoal: #374047;
+  --taranis-off-white: #F5F6F7;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', 'Calibri', 'Arial', sans-serif;
+  color: var(--taranis-charcoal);
+  background: var(--taranis-off-white);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5 {
+  font-family: 'Playfair Display', 'Georgia', serif;
+  color: var(--taranis-green-dark);
+}
+
+/* Ant Design overrides that need CSS (can't be done via tokens alone) */
+.ant-layout-header {
+  font-family: 'Inter', 'Calibri', 'Arial', sans-serif;
+}
+
+/* Gold accent for selected/active states */
+::selection {
+  background: rgba(201, 168, 76, 0.3);
+  color: var(--taranis-green-dark);
+}

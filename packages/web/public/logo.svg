@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="goldGrad" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#F0DC8A"/>
+      <stop offset="20%" stop-color="#DABB5C"/>
+      <stop offset="45%" stop-color="#C9A84C"/>
+      <stop offset="70%" stop-color="#A88B3A"/>
+      <stop offset="100%" stop-color="#7A6428"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Top chevron -->
+  <polygon points="
+    100,72
+    256,16
+    412,72
+    412,148
+    256,92
+    100,148
+  " fill="url(#goldGrad)"/>
+  
+  <!-- Middle chevron -->
+  <polygon points="
+    58,168
+    256,112
+    454,168
+    454,300
+    256,244
+    58,300
+  " fill="url(#goldGrad)"/>
+  
+  <!-- Bottom chevron -->
+  <polygon points="
+    38,320
+    256,264
+    474,320
+    474,400
+    256,496
+    38,400
+  " fill="url(#goldGrad)"/>
+</svg>

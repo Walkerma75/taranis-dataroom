@@ -1,0 +1,18 @@
+{
+  "name": "taranis-dataroom",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/api",
+    "packages/web"
+  ],
+  "scripts": {
+    "dev": "docker compose up --build",
+    "dev:api": "npm -w packages/api run dev",
+    "dev:web": "npm -w packages/web run dev",
+    "lint": "npm -w packages/api run lint && npm -w packages/web run lint"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
