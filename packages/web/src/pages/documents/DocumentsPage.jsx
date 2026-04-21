@@ -5,18 +5,20 @@ import {
   Tooltip, Divider,
 } from 'antd';
 import {
-  UploadOutlined, DownloadOutlined, EyeOutlined, DeleteOutlined, FileTextOutlined,
+  UploadOutlined, DownloadOutlined, EyeOutlined, DeleteOutlined, EditOutlined, FileTextOutlined,
   FilePdfOutlined, FileExcelOutlined, FileWordOutlined, FilePptOutlined, FileImageOutlined,
-  SearchOutlined,
+  SearchOutlined, ExpandOutlined, CompressOutlined,
 } from '@ant-design/icons';
 import { api } from '../../api/client.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { hasCap } from '../../components/AppLayout.jsx';
+import PdfViewer from '../../components/PdfViewer.jsx';
+import BulkUploadModal from '../../components/BulkUploadModal.jsx';
 import dayjs from 'dayjs';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 function fileIcon(mimeType) {
   if (mimeType?.includes('pdf')) return <FilePdfOutlined style={{ color: '#cf1322' }} />;
@@ -74,6 +76,15 @@ export default function DocumentsPage() {
 
   // Viewer modal
   const [viewDoc, setViewDoc] = useState(null);
+  const [viewerExpanded, setViewerExpanded] = useState(false);
+
+  // Edit modal
+  const [editDoc, setEditDoc] = useState(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editForm] = Form.useForm();
+
+  // Bulk upload modal
+  const [bulkUploadOpen, setBulkUploadOpen] = useState(false);
 
   const loadDocuments = async () => {
     setLoading(true);
@@ -185,6 +196,7 @@ export default function DocumentsPage() {
   };
 
   const handleView = (doc) => {
+    setViewerExpanded(false);
     setViewDoc(doc);
   };
 
@@ -203,6 +215,33 @@ export default function DocumentsPage() {
         }
       },
     });
+  };
+
+  const handleEdit = (doc) => {
+    setEditDoc(doc);
+    editForm.setFieldsValue({
+      title: doc.title,
+      description: doc.description || '',
+      categoryId: doc.categoryId,
+    });
+  };
+
+  const handleEditSave = async (values) => {
+    setEditSaving(true);
+    try {
+      const res = await api.patch(`/documents/${editDoc.id}`, values);
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error);
+      }
+      message.success('Document updated');
+      setEditDoc(null);
+      editForm.resetFields();
+      loadDocuments();
+    } catch (err) {
+      message.error(err.message);
+    }
+    setEditSaving(false);
   };
 
   // Group documents by fund
@@ -252,7 +291,7 @@ export default function DocumentsPage() {
     {
       title: 'Actions',
       key: 'actions',
-      width: 160,
+      width: 200,
       render: (_, doc) => (
         <Space>
           <Tooltip title="View">
@@ -261,6 +300,11 @@ export default function DocumentsPage() {
           {doc.downloadAllowed && canDownload && (
             <Tooltip title="Download">
               <Button icon={<DownloadOutlined />} size="small" onClick={() => handleDownload(doc)} />
+            </Tooltip>
+          )}
+          {canUpload && (
+            <Tooltip title="Edit">
+              <Button icon={<EditOutlined />} size="small" onClick={() => handleEdit(doc)} />
             </Tooltip>
           )}
           {canUpload && (
@@ -318,6 +362,11 @@ export default function DocumentsPage() {
             options={categories.map((c) => ({ value: c.id, label: c.name }))}
           />
           {canUpload && (
+            <Button icon={<UploadOutlined />} onClick={() => setBulkUploadOpen(true)}>
+              Bulk Upload
+            </Button>
+          )}
+          {canUpload && (
             <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
               Upload
             </Button>
@@ -346,21 +395,28 @@ export default function DocumentsPage() {
       <Modal
         title={null}
         open={!!viewDoc}
-        onCancel={() => setViewDoc(null)}
+        onCancel={() => { setViewDoc(null); setViewerExpanded(false); }}
         footer={null}
-        width={900}
-        styles={{ body: { padding: 0 } }}
+        width={viewerExpanded ? '100vw' : 900}
+        styles={{
+          body: { padding: 0 },
+          ...(viewerExpanded ? {
+            wrapper: { top: 0 },
+            content: { borderRadius: 0 },
+          } : {}),
+        }}
+        style={viewerExpanded ? { top: 0, maxWidth: '100vw', paddingBottom: 0, margin: 0 } : {}}
         destroyOnClose
       >
         {viewDoc && (
           <div>
-            {/* Header bar with title and download button */}
+            {/* Header bar with title, expand and download buttons */}
             <div
               style={{
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
-                padding: '16px 24px',
+                padding: '12px 24px',
                 borderBottom: '1px solid #f0f0f0',
                 background: '#fafafa',
               }}
@@ -375,24 +431,33 @@ export default function DocumentsPage() {
                   </Text>
                 </div>
               </Space>
-              {viewDoc.downloadAllowed && canDownload && (
-                <Button
-                  type="primary"
-                  icon={<DownloadOutlined />}
-                  onClick={() => handleDownload(viewDoc)}
-                >
-                  Download
-                </Button>
-              )}
+              <Space>
+                {viewDoc.mimeType?.includes('pdf') && (
+                  <Tooltip title={viewerExpanded ? 'Compact view' : 'Expand to full screen'}>
+                    <Button
+                      icon={viewerExpanded ? <CompressOutlined /> : <ExpandOutlined />}
+                      onClick={() => setViewerExpanded(!viewerExpanded)}
+                    />
+                  </Tooltip>
+                )}
+                {viewDoc.downloadAllowed && canDownload && (
+                  <Button
+                    type="primary"
+                    icon={<DownloadOutlined />}
+                    onClick={() => handleDownload(viewDoc)}
+                  >
+                    Download
+                  </Button>
+                )}
+              </Space>
             </div>
 
             {/* Document preview area */}
-            <div style={{ padding: 0, minHeight: 500 }}>
+            <div style={{ padding: 0, minHeight: viewerExpanded ? 'calc(100vh - 110px)' : 500 }}>
               {viewDoc.mimeType?.includes('pdf') ? (
-                <iframe
-                  src={getViewUrl(viewDoc)}
-                  style={{ width: '100%', height: 600, border: 'none' }}
-                  title={viewDoc.title}
+                <PdfViewer
+                  fileUrl={getViewUrl(viewDoc)}
+                  height={viewerExpanded ? window.innerHeight - 110 : 600}
                 />
               ) : viewDoc.mimeType?.includes('image') ? (
                 <div style={{ textAlign: 'center', padding: 24 }}>
@@ -478,6 +543,44 @@ export default function DocumentsPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      {/* Edit document modal */}
+      <Modal
+        title="Edit Document"
+        open={!!editDoc}
+        onCancel={() => { setEditDoc(null); editForm.resetFields(); }}
+        footer={null}
+        width={500}
+        destroyOnClose
+      >
+        <Form form={editForm} layout="vertical" onFinish={handleEditSave}>
+          <Form.Item name="title" label="Title" rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="description" label="Description">
+            <TextArea rows={3} />
+          </Form.Item>
+          <Form.Item name="categoryId" label="Category" rules={[{ required: true }]}>
+            <Select
+              options={categories.map((c) => ({ value: c.id, label: c.name }))}
+            />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" loading={editSaving} block>
+              Save Changes
+            </Button>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* Bulk upload modal */}
+      <BulkUploadModal
+        open={bulkUploadOpen}
+        onClose={() => setBulkUploadOpen(false)}
+        funds={funds}
+        categories={categories}
+        onSuccess={loadDocuments}
+      />
     </div>
   );
 }

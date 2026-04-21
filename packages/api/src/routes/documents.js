@@ -1,21 +1,30 @@
 /**
  * Document routes — upload, list, download.
- * Uses local filesystem in dev; will switch to S3 presigned URLs in production.
+ * Uses S3 for file storage (bucket configured via S3_BUCKET env var).
+ * Falls back to local filesystem if S3_BUCKET is not set (dev mode).
  */
 import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
+
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { pool } from '../db.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../services/audit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, '../../uploads');
+const S3_BUCKET = process.env.S3_BUCKET || null;
+const AWS_REGION = process.env.AWS_REGION || 'eu-west-2';
 
-// Ensure upload directory exists
+// S3 client (initialised only if bucket is configured)
+const s3 = S3_BUCKET
+  ? new S3Client({ region: AWS_REGION })
+  : null;
+
+// Ensure local upload directory exists (used as temp staging even with S3)
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
@@ -36,6 +45,35 @@ const upload = multer({
     else cb(new Error(`File type ${ext} not allowed`));
   },
 });
+
+// Helper: upload a local file to S3 and clean up the local copy
+async function uploadToS3(localPath, s3Key, mimeType) {
+  const body = fs.readFileSync(localPath);
+  await s3.send(new PutObjectCommand({
+    Bucket: S3_BUCKET,
+    Key: s3Key,
+    Body: body,
+    ContentType: mimeType,
+  }));
+  // Remove local temp file after successful S3 upload
+  fs.unlinkSync(localPath);
+  console.log(`[documents] Uploaded to S3: ${s3Key}`);
+}
+
+// Helper: stream a file from S3 to the HTTP response
+async function streamFromS3(s3Key, res, contentType, disposition) {
+  const command = new GetObjectCommand({
+    Bucket: S3_BUCKET,
+    Key: s3Key,
+  });
+  const s3Response = await s3.send(command);
+  res.setHeader('Content-Type', contentType || 'application/octet-stream');
+  res.setHeader('Content-Disposition', disposition);
+  if (s3Response.ContentLength) {
+    res.setHeader('Content-Length', s3Response.ContentLength);
+  }
+  s3Response.Body.pipe(res);
+}
 
 // Helper: load user capabilities from DB
 async function getUserCapabilities(userId) {
@@ -140,41 +178,18 @@ router.post('/', upload.single('file'), async (req, res) => {
   }
 
   try {
-    // Auto-convert Word documents to PDF
-    let finalFilename = req.file.filename;
-    let finalOriginalName = req.file.originalname;
-    let finalSize = req.file.size;
-    let finalMimeType = req.file.mimetype;
-    let converted = false;
+    const finalFilename = req.file.filename;
+    const finalOriginalName = req.file.originalname;
+    const finalSize = req.file.size;
+    const finalMimeType = req.file.mimetype;
 
-    const ext = path.extname(req.file.originalname).toLowerCase();
-    if (['.doc', '.docx'].includes(ext)) {
-      try {
-        const inputPath = path.join(UPLOAD_DIR, req.file.filename);
-        execSync(`libreoffice --headless --convert-to pdf --outdir "${UPLOAD_DIR}" "${inputPath}"`, {
-          timeout: 60000, // 60 second timeout
-        });
+    // Upload to S3 if configured, otherwise keep locally
+    const s3Key = `documents/${fundId}/${finalFilename}`;
+    const storagePath = s3 ? s3Key : finalFilename;
 
-        // LibreOffice outputs with same base name but .pdf extension
-        const baseName = path.basename(req.file.filename, path.extname(req.file.filename));
-        const pdfFilename = `${baseName}.pdf`;
-        const pdfPath = path.join(UPLOAD_DIR, pdfFilename);
-
-        if (fs.existsSync(pdfPath)) {
-          finalFilename = pdfFilename;
-          finalOriginalName = req.file.originalname.replace(/\.(doc|docx)$/i, '.pdf');
-          finalSize = fs.statSync(pdfPath).size;
-          finalMimeType = 'application/pdf';
-          converted = true;
-
-          // Remove the original Word file
-          fs.unlinkSync(inputPath);
-          console.log(`[documents] Converted ${req.file.originalname} to PDF`);
-        }
-      } catch (convErr) {
-        console.warn('[documents] PDF conversion failed, keeping original:', convErr.message);
-        // Fall through — keep the original Word file
-      }
+    if (s3) {
+      const localPath = path.join(UPLOAD_DIR, finalFilename);
+      await uploadToS3(localPath, s3Key, finalMimeType);
     }
 
     const { rows: [doc] } = await pool.query(
@@ -183,7 +198,7 @@ router.post('/', upload.single('file'), async (req, res) => {
        RETURNING *`,
       [
         fundId, categoryId, title, description || null,
-        finalOriginalName, finalFilename, finalSize, finalMimeType,
+        finalOriginalName, storagePath, finalSize, finalMimeType,
         req.user.sub,
       ]
     );
@@ -197,7 +212,7 @@ router.post('/', upload.single('file'), async (req, res) => {
         title, fundId, categoryId,
         fileName: req.file.originalname,
         size: req.file.size,
-        ...(converted ? { convertedToPdf: true, originalFormat: ext } : {}),
+        storage: s3 ? 's3' : 'local',
       },
       ip: req.ip,
     });
@@ -266,20 +281,160 @@ router.get('/:id/download', async (req, res) => {
       ip: req.ip,
     });
 
-    const filePath = path.join(UPLOAD_DIR, doc.file_path);
+    const disposition = isInline
+      ? `inline; filename="${doc.file_name}"`
+      : `attachment; filename="${doc.file_name}"`;
 
-    if (isInline) {
-      // Serve inline for preview (PDF/images in iframe/img tags)
-      res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `inline; filename="${doc.file_name}"`);
-      res.sendFile(filePath);
+    // Serve from S3 if configured, otherwise from local filesystem
+    if (s3 && doc.file_path.startsWith('documents/')) {
+      await streamFromS3(doc.file_path, res, doc.mime_type, disposition);
     } else {
-      res.download(filePath, doc.file_name);
+      const filePath = path.join(UPLOAD_DIR, doc.file_path);
+      res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
+      res.setHeader('Content-Disposition', disposition);
+      res.sendFile(filePath);
     }
   } catch (err) {
     console.error('[documents] Download error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+});
+
+// PATCH /documents/:id — update document metadata (admin or canUploadDocuments)
+router.patch('/:id', async (req, res) => {
+  const userCaps = await getUserCapabilities(req.user.sub);
+  if (req.user.role !== 'admin' && !userCaps.canUploadDocuments) {
+    return res.status(403).json({ error: 'You do not have permission to edit documents' });
+  }
+
+  const { title, description, categoryId } = req.body;
+  if (!title && description === undefined && !categoryId) {
+    return res.status(400).json({ error: 'No fields to update' });
+  }
+
+  try {
+    // Build dynamic UPDATE query
+    const sets = [];
+    const params = [];
+    let idx = 1;
+
+    if (title) { sets.push(`title = $${idx++}`); params.push(title); }
+    if (description !== undefined) { sets.push(`description = $${idx++}`); params.push(description || null); }
+    if (categoryId) { sets.push(`category_id = $${idx++}`); params.push(categoryId); }
+    sets.push(`updated_at = NOW()`);
+
+    params.push(req.params.id);
+    const query = `UPDATE documents SET ${sets.join(', ')} WHERE id = $${idx} AND status = 'active' RETURNING *`;
+
+    const { rows: [doc] } = await pool.query(query, params);
+    if (!doc) return res.status(404).json({ error: 'Document not found' });
+
+    await logAudit({
+      action: 'document.updated',
+      userId: req.user.sub,
+      resource: 'document',
+      resourceId: doc.id,
+      detail: { title, description, categoryId },
+      ip: req.ip,
+    });
+
+    res.json(doc);
+  } catch (err) {
+    console.error('[documents] Update error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
+});
+
+// POST /documents/bulk — bulk upload (requires canUploadDocuments capability or admin role)
+router.post('/bulk', upload.array('files', 50), async (req, res) => {
+  const userCaps = await getUserCapabilities(req.user.sub);
+  if (req.user.role !== 'admin' && !userCaps.canUploadDocuments) {
+    return res.status(403).json({ error: 'You do not have permission to upload documents' });
+  }
+
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({ error: 'At least one file is required' });
+  }
+
+  // metadata is a JSON array matching the order of the uploaded files
+  let metadata;
+  try {
+    metadata = JSON.parse(req.body.metadata || '[]');
+  } catch {
+    return res.status(400).json({ error: 'Invalid metadata JSON' });
+  }
+
+  if (metadata.length !== req.files.length) {
+    return res.status(400).json({ error: `Metadata count (${metadata.length}) does not match file count (${req.files.length})` });
+  }
+
+  // Validate each entry has required fields
+  for (let i = 0; i < metadata.length; i++) {
+    const m = metadata[i];
+    if (!m.fundId || !m.categoryId || !m.title) {
+      return res.status(400).json({ error: `File ${i + 1} is missing fundId, categoryId, or title` });
+    }
+  }
+
+  const results = [];
+  const errors = [];
+
+  for (let i = 0; i < req.files.length; i++) {
+    const file = req.files[i];
+    const meta = metadata[i];
+
+    try {
+      const finalFilename = file.filename;
+      const finalOriginalName = file.originalname;
+      const finalSize = file.size;
+      const finalMimeType = file.mimetype;
+
+      // Upload to S3
+      const s3Key = `documents/${meta.fundId}/${finalFilename}`;
+      const storagePath = s3 ? s3Key : finalFilename;
+
+      if (s3) {
+        const localPath = path.join(UPLOAD_DIR, finalFilename);
+        await uploadToS3(localPath, s3Key, finalMimeType);
+      }
+
+      const { rows: [doc] } = await pool.query(
+        `INSERT INTO documents (fund_id, category_id, title, description, file_name, file_path, file_size, mime_type, download_allowed, uploaded_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING *`,
+        [
+          meta.fundId, meta.categoryId, meta.title, meta.description || null,
+          finalOriginalName, storagePath, finalSize, finalMimeType,
+          meta.downloadAllowed !== false, req.user.sub,
+        ]
+      );
+
+      await logAudit({
+        action: 'document.uploaded',
+        userId: req.user.sub,
+        resource: 'document',
+        resourceId: doc.id,
+        detail: {
+          title: meta.title, fundId: meta.fundId, categoryId: meta.categoryId,
+          fileName: file.originalname, size: file.size,
+          storage: s3 ? 's3' : 'local', bulk: true,
+        },
+        ip: req.ip,
+      });
+
+      results.push({ file: file.originalname, id: doc.id, success: true });
+    } catch (err) {
+      console.error(`[documents/bulk] Error uploading ${file.originalname}:`, err);
+      errors.push({ file: file.originalname, error: err.message });
+      // Clean up temp file on error
+      try { fs.unlinkSync(path.join(UPLOAD_DIR, file.filename)); } catch {}
+    }
+  }
+
+  const status = errors.length === 0 ? 201 : (results.length > 0 ? 207 : 500);
+  res.status(status).json({ results, errors, total: req.files.length, succeeded: results.length, failed: errors.length });
 });
 
 // DELETE /documents/:id — admin soft-delete (archive)

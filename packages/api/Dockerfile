@@ -4,13 +4,10 @@ FROM node:20-alpine AS deps
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 # ---------- Stage 2: production image ----------
 FROM node:20-alpine
-
-# LibreOffice for Word-to-PDF conversion
-RUN apk add --no-cache libreoffice
 
 WORKDIR /app
 

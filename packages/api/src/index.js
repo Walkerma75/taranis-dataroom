@@ -25,8 +25,18 @@ const PORT = process.env.API_PORT || 4000;
 // ---------------------------------------------------------------------------
 // Global middleware
 // ---------------------------------------------------------------------------
-app.use(helmet());
-app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:5173' }));
+app.use(helmet({
+  // Relax CSP so the web app can embed API-served PDFs/images in iframes
+  contentSecurityPolicy: false,
+  // Allow same-origin framing (PDF viewer iframe)
+  frameguard: { action: 'sameorigin' },
+}));
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || [
+    'http://localhost:5173',
+    'https://dataroom.taraniscapital.com',
+  ],
+}));
 app.use(express.json({ limit: '10mb' }));
 
 // Rate limiting on auth endpoints

@@ -2,7 +2,9 @@
  * API client with automatic token refresh.
  */
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+// In production the web container's nginx proxies /api/* → API container.
+// In development the Vite dev-server proxy does the same thing.
+const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 let accessToken = null;
 let refreshToken = null;

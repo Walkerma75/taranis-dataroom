@@ -1,7 +1,8 @@
 @echo off
 REM ============================================================
-REM Taranis Data Room — Build & Deploy to AWS
-REM Run this from: C:\Users\mark\Claude Cowork\Taranis Dataroom\taranis-dataroom
+REM Taranis Data Room - Build & Deploy API ONLY to AWS
+REM Use this when only the API package has changed (faster than full deploy).
+REM Run from: C:\Users\mark\Claude Cowork\Taranis Dataroom\taranis-dataroom
 REM Prerequisites: Docker Desktop running, AWS CLI installed
 REM ============================================================
 
@@ -40,19 +41,7 @@ if errorlevel 1 (
 cd ..\..
 
 echo.
-echo === Step 3: Build Web image ===
-cd packages\web
-REM VITE_API_URL=/api is the default in the Dockerfile — routes through nginx proxy
-docker build --build-arg VITE_API_URL=/api -t %ECR_REGISTRY%/taranis-dataroom/web:latest .
-if errorlevel 1 (
-    echo ERROR: Web build failed.
-    pause
-    exit /b 1
-)
-cd ..\..
-
-echo.
-echo === Step 4: Push API image to ECR ===
+echo === Step 3: Push API image to ECR ===
 docker push %ECR_REGISTRY%/taranis-dataroom/api:latest
 if errorlevel 1 (
     echo ERROR: API push failed.
@@ -61,27 +50,23 @@ if errorlevel 1 (
 )
 
 echo.
-echo === Step 5: Push Web image to ECR ===
-docker push %ECR_REGISTRY%/taranis-dataroom/web:latest
+echo === Step 4: Force new ECS deployment ===
+aws ecs update-service --cluster taranis-dataroom --service taranis-dataroom-service --force-new-deployment --region %AWS_REGION% --no-cli-pager
 if errorlevel 1 (
-    echo ERROR: Web push failed.
+    echo ERROR: ECS deployment trigger failed.
     pause
     exit /b 1
 )
 
 echo.
-echo === Step 6: Start ECS service (1 task) ===
-aws ecs update-service --cluster taranis-dataroom --service taranis-dataroom-service --desired-count 1 --force-new-deployment --region %AWS_REGION%
-
-echo.
 echo ============================================================
-echo SUCCESS! Images pushed and service starting.
+echo SUCCESS! API image pushed and service restarting.
 echo.
-echo The service will take 2-3 minutes to start.
-echo Check status: aws ecs describe-services --cluster taranis-dataroom --services taranis-dataroom-service --query "services[0].deployments[0].runningCount" --region eu-west-2
+echo The new task will take 2-3 minutes to become healthy.
+echo.
+echo Check status:
+echo   aws ecs describe-services --cluster taranis-dataroom --services taranis-dataroom-service --query "services[0].deployments" --region eu-west-2
 echo.
 echo Once running, visit: https://dataroom.taraniscapital.com
-echo Login: admin@taraniscapital.com / REDACTED-SEED-PASSWORD
-echo IMPORTANT: Change the admin password immediately after first login!
 echo ============================================================
 pause

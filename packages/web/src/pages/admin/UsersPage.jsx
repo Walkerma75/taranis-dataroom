@@ -337,7 +337,7 @@ export default function UsersPage() {
               Permissions
             </Button>
           </Tooltip>
-          {record.status === 'active' && (
+          {record.status !== 'disabled' && (
             <Tooltip title="Generate password reset link">
               <Button
                 icon={<SafetyCertificateOutlined />}

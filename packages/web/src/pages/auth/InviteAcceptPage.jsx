@@ -4,7 +4,7 @@ import { Card, Form, Input, Button, Typography, Alert, Space } from 'antd';
 import { SafetyCertificateOutlined, LockOutlined } from '@ant-design/icons';
 
 const { Title, Text } = Typography;
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 export default function InviteAcceptPage() {
   const [searchParams] = useSearchParams();
