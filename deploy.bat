@@ -70,7 +70,5 @@ echo The service will take 2-3 minutes to start.
 echo Check status: aws ecs describe-services --cluster taranis-dataroom --services taranis-dataroom-service --query "services[0].deployments[0].runningCount" --region eu-west-2
 echo.
 echo Once running, visit: https://dataroom.taraniscapital.com
-echo Login: admin@taraniscapital.com / REDACTED-SEED-PASSWORD
-echo IMPORTANT: Change the admin password immediately after first login!
 echo ============================================================
 pause

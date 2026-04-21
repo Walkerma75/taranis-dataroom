@@ -138,19 +138,29 @@ async function autoMigrate() {
 }
 
 async function autoSeed() {
-  // Check if admin user already exists
+  // Check if admin user already exists — if so, this is a no-op.
+  // Never update an existing admin's password from here, even if
+  // SEED_ADMIN_PASSWORD happens to be set.
   const { rows } = await pool.query("SELECT id FROM users WHERE email = 'admin@taraniscapital.com'");
   if (rows.length > 0) {
     console.log('[seed] Admin user already exists — skipping seed.');
     return;
   }
 
-  console.log('[seed] Seeding initial data...');
+  const password = process.env.SEED_ADMIN_PASSWORD;
+  if (!password) {
+    console.error('[seed] No admin user found and SEED_ADMIN_PASSWORD is not set.');
+    console.error('[seed] Set SEED_ADMIN_PASSWORD (e.g. via AWS Secrets Manager) and restart,');
+    console.error('[seed] or create the admin user directly in the database, then restart.');
+    throw new Error('SEED_ADMIN_PASSWORD required for first-boot admin creation');
+  }
+
+  console.log('[seed] No admin user found — creating initial admin account.');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const passwordHash = await argon2.hash('REDACTED-SEED-PASSWORD', {
+    const passwordHash = await argon2.hash(password, {
       type: argon2.argon2id,
       memoryCost: 65536,
       timeCost: 3,
@@ -169,24 +179,11 @@ async function autoSeed() {
     await client.query(`
       INSERT INTO users (email, display_name, password_hash, role, status, capabilities)
       VALUES ('admin@taraniscapital.com', 'Mark Walker', $1, 'admin', 'active', $2::jsonb)
-      ON CONFLICT (email) DO UPDATE SET password_hash = $1, status = 'active', capabilities = $2::jsonb
+      ON CONFLICT (email) DO NOTHING
     `, [passwordHash, adminCaps]);
 
-    const funds = [
-      { name: 'Taranis Biotech Fund', slug: 'biotech', description: 'Life sciences and biotechnology investment fund' },
-      { name: 'Taranis Datacentre Fund', slug: 'datacentre', description: 'Digital infrastructure and datacentre investment fund' },
-      { name: 'Taranis Property Fund', slug: 'property', description: 'Real estate and property investment fund' },
-    ];
-    for (const fund of funds) {
-      await client.query(`
-        INSERT INTO funds (name, slug, description, status)
-        VALUES ($1, $2, $3, 'active')
-        ON CONFLICT (slug) DO NOTHING
-      `, [fund.name, fund.slug, fund.description]);
-    }
-
     await client.query('COMMIT');
-    console.log('[seed] Done — admin user and funds created.');
+    console.log('[seed] Admin user created.');
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('[seed] Failed:', err.message);

@@ -1,23 +1,32 @@
 /**
- * Seed script — creates initial admin user and the three launch funds.
+ * Seed script — creates the initial admin user only.
  * Run once after migrations: npm run seed
  *
- * Default admin: admin@taraniscapital.com / REDACTED-SEED-PASSWORD
- * (Change immediately in production.)
+ * Requires SEED_ADMIN_PASSWORD in the environment. No default.
+ * If the admin user already exists, the seed is a no-op — this script
+ * never resets an existing admin's password.
+ *
+ * Funds, document categories and other reference data are NOT seeded
+ * here. Document categories are seeded by migration 002; funds are
+ * created through the admin UI after first login.
  */
 import argon2 from 'argon2';
 import { pool } from '../db.js';
 
 async function seed() {
+  const password = process.env.SEED_ADMIN_PASSWORD;
+  if (!password) {
+    console.error('[seed] SEED_ADMIN_PASSWORD is not set. Aborting.');
+    console.error('[seed] Provide an initial password for admin@taraniscapital.com and re-run.');
+    process.exit(1);
+  }
+
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
 
-    // -----------------------------------------------------------------------
-    // Admin user
-    // -----------------------------------------------------------------------
-    const passwordHash = await argon2.hash('REDACTED-SEED-PASSWORD', {
+    const passwordHash = await argon2.hash(password, {
       type: argon2.argon2id,
       memoryCost: 65536,
       timeCost: 3,
@@ -33,37 +42,17 @@ async function seed() {
       canViewDocuments: true,
     });
 
-    const { rows: [admin] } = await client.query(`
+    const { rows } = await client.query(`
       INSERT INTO users (email, display_name, password_hash, role, status, capabilities)
       VALUES ('admin@taraniscapital.com', 'Mark Walker', $1, 'admin', 'active', $2::jsonb)
-      ON CONFLICT (email) DO UPDATE SET password_hash = $1, status = 'active', capabilities = $2::jsonb
+      ON CONFLICT (email) DO NOTHING
       RETURNING id
     `, [passwordHash, adminCaps]);
 
-    console.log(`[seed] Admin user: admin@taraniscapital.com (${admin.id})`);
-
-    // -----------------------------------------------------------------------
-    // Three launch funds
-    // -----------------------------------------------------------------------
-    const funds = [
-      { name: 'Taranis Biotech Fund', slug: 'biotech', description: 'Life sciences and biotechnology investment fund' },
-      { name: 'Taranis Datacentre Fund', slug: 'datacentre', description: 'Digital infrastructure and datacentre investment fund' },
-      { name: 'Taranis Property Fund', slug: 'property', description: 'Real estate and property investment fund' },
-    ];
-
-    for (const fund of funds) {
-      const { rows: [f] } = await client.query(`
-        INSERT INTO funds (name, slug, description, status)
-        VALUES ($1, $2, $3, 'active')
-        ON CONFLICT (slug) DO NOTHING
-        RETURNING id
-      `, [fund.name, fund.slug, fund.description]);
-
-      if (f) {
-        console.log(`[seed] Fund: ${fund.name} (${f.id})`);
-      } else {
-        console.log(`[seed] Fund: ${fund.name} (already exists)`);
-      }
+    if (rows.length > 0) {
+      console.log(`[seed] Admin user created: admin@taraniscapital.com (${rows[0].id})`);
+    } else {
+      console.log('[seed] Admin user already exists — left untouched (password not reset).');
     }
 
     await client.query('COMMIT');

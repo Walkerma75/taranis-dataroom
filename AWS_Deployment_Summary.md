@@ -206,8 +206,8 @@ aws ecs execute-command --cluster taranis-dataroom \
 
 ### Step E: Verify
 1. Navigate to https://dataroom.taraniscapital.com
-2. Log in with `admin@taraniscapital.com` / `REDACTED-SEED-PASSWORD`
-3. **Immediately change the admin password**
+2. Log in as `admin@taraniscapital.com` using the password supplied via the `SEED_ADMIN_PASSWORD` environment variable at first seed. See `MIGRATION-INVENTORY.md` for the current Secrets Manager reference.
+3. Rotate that initial password via the app's Change Password screen before onboarding any users.
 
 ---
 
