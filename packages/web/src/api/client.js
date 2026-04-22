@@ -2,7 +2,11 @@
  * API client with automatic token refresh.
  */
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+// Default to '/api' so the built bundle uses a relative URL — nginx in the web
+// container proxies /api/* to the api container in prod, and vite.config.js
+// proxies /api/* to the api service in local dev. Setting VITE_API_URL at build
+// time remains supported for overriding (e.g. pointing at a staging API host).
+const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 let accessToken = null;
 let refreshToken = null;

@@ -16,7 +16,7 @@ import dayjs from 'dayjs';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 function fileIcon(mimeType) {
   if (mimeType?.includes('pdf')) return <FilePdfOutlined style={{ color: '#cf1322' }} />;

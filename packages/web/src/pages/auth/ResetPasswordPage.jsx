@@ -5,7 +5,7 @@ import { LockOutlined, KeyOutlined } from '@ant-design/icons';
 import TaranisLogo from '../../components/TaranisLogo.jsx';
 
 const { Title, Text } = Typography;
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 export default function ResetPasswordPage() {
   const [searchParams] = useSearchParams();
