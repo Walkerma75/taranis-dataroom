@@ -4,7 +4,12 @@ FROM node:20-alpine AS deps
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
+# Using npm install rather than npm ci because the monorepo's authoritative
+# lockfile lives at the repo root (npm workspaces); packages/api does not
+# carry its own package-lock.json. Reproducibility trade-off documented —
+# revisit when/if we refactor the Dockerfile to build from repo-root context
+# with the root lockfile copied in.
+RUN npm install --omit=dev
 
 # ---------- Stage 2: production image ----------
 FROM node:20-alpine

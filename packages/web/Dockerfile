@@ -4,7 +4,9 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm ci
+# See packages/api/Dockerfile for rationale — workspace lockfile lives at repo
+# root, not per-package.
+RUN npm install
 
 COPY . .
 RUN npm run build
