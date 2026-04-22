@@ -29,17 +29,20 @@
 
 ## Deploy
 
-The operational deploy is `deploy.bat` run from PowerShell on Mark's Windows laptop — builds api + web images, pushes to ECR as `:latest`, triggers `aws ecs update-service --force-new-deployment`. A GitHub Actions workflow at `.github/workflows/deploy.yml` exists but was not wired with a working IAM user — red Actions tab is expected until the new deploy principal is created and secrets populated.
+Primary path is **GitHub Actions CI** (`.github/workflows/deploy.yml`) — push to `main` triggers a build-and-deploy. Auto-deploy wired 2026-04-22 against the new least-privilege `taranis-dataroom-deploy` IAM user. Workflow builds api + web images, tags `:latest` + `:${{ github.sha }}`, pushes to ECR, pulls the current live task-def, updates container image SHAs, registers a new revision, rolls the service with `wait-for-service-stability: true`.
 
-Local dev: `docker-compose up` — web at `http://localhost:5173`, api at `http://localhost:3001`.
+Fallback path is `deploy.bat` from PowerShell on Mark's Windows laptop — pinned to `AWS_PROFILE=TaranisCapital` so a `default` or `disruptsmedia` profile cannot deploy here by accident. `deploy.bat` tags `:latest` only (not `:${{ github.sha }}`) — switching it to unique tags is TASKS.md #15.
+
+Local dev: `docker-compose up` — web at `http://localhost:5173`, api at `http://localhost:3001`. Vite dev server proxies `/api/*` to the api service (see `packages/web/vite.config.js`).
 
 See `MIGRATION-INVENTORY.md` at the repo root for the full state-of-the-world.
 
 ## Secrets
 
-- All production secrets today live as plaintext env vars on the ECS task definition (revision 4). AWS Secrets Manager is **empty** at the time of writing — moving secrets into it is an in-flight remediation item. See `MIGRATION-INVENTORY.md` §4 for the current location and target state.
+- Runtime secrets live in **AWS Secrets Manager** (as of 2026-04-22): `taranis-dataroom/rds/master` (RDS password), `taranis-dataroom/jwt/signing` (JWT HMAC secret), `taranis-dataroom/seed/admin` (DR pre-position only, not runtime-referenced). ECS task-def `:6` references the first two via `secrets:` block. Access is via the inline policy `taranis-dataroom-secrets-access` on `ecsTaskExecutionRole`, scoped to those two specific ARNs only.
+- RDS master password was rotated 2026-04-22 in the same window as the Secrets Manager migration. JWT signing secret was rotated in the same atomic window (it had been plaintext in the task-def env since the 8 April deploy). Quarterly rotation reminder on calendar.
 - `.env` lives at the repo root for local dev — **must not** be committed (gitignored).
-- Never put secret values in committed files. Names and locations only.
+- **Never put secret values in committed files. Names and locations only.**
 - After the 21 April 2026 history scrub, any reference to specific prior credential values (AWS key `AKIA…OP7D`, the prior RDS master password, the `Admin123!` seed default) lives only in `docs/incident/` with truncated identifiers.
 
 ## Five user roles
@@ -68,9 +71,11 @@ Overview, Private Placement Memorandum, Legal Documents, Financials, Technical, 
 ## Known gotchas carried forward
 
 - **8-year `audit_log` retention is DFSA-aligned.** The table is append-only. Never prune, never alter the triggers, never drop. The triggers live in migration 004.
-- **RDS password rotation requires coordinated task-definition update.** Any rotation needs the new password in Secrets Manager, a new ECS task-definition revision referencing it, `update-service` to roll the task, **then** the actual RDS rotation. Out-of-order is a production outage.
+- **RDS password rotation atomic sequence.** The canonical ordering lives in `MIGRATION-INVENTORY.md` Appendix B (corrected 2026-04-22 after executing in prod). Key point: Secrets Manager must initially hold the CURRENT RDS password before you roll the new task-def, then you update SM to the new value AND rotate RDS AND force-new-deployment in a single ~10-min freeze window. Out-of-order is a production outage.
 - **"CloudFront OAC presigned URLs, 5-minute TTL" is a spec plan, not the implementation.** Today documents stream through the ECS API via the task role, not through CloudFront. If a user reports a broken PDF link, it's usually an auth-token timeout or an S3 key mismatch, not OAC.
-- **`deploy.bat` uses `:latest` tags** — not the `DR-0.1.0-b{YYYYMMDD.HHMM}` pattern the earlier notes described. Switching to unique tags is on the TASKS list.
+- **`deploy.bat` uses `:latest` tags; CI uses `:latest` + `:${{ github.sha }}`.** Switching deploy.bat to unique tags is TASKS.md #15.
+- **Frontend `VITE_API_URL` defaults to relative `/api`.** Any build without this env var set still produces a working bundle (nginx proxies). An earlier defaulting to `http://localhost:4000` caused a latent bug that only surfaced when cached JWTs were invalidated — fixed 2026-04-22. See `../WORKFLOW.md` → "Latent bugs exposed during Tier 3 migrations" if planning a rotation elsewhere.
+- **pg.Pool has explicit `ssl:` config in `packages/api/src/db.js`.** Gated on `PGSSLMODE`. Encrypt-without-verify (`rejectUnauthorized: false`) until the RDS CA bundle is shipped with the image (TASKS.md #13 paired with `rds.force_ssl=1`).
 
 ## Repo
 
@@ -90,4 +95,4 @@ Overview, Private Placement Memorandum, Legal Documents, Financials, Technical, 
 
 ## Last updated
 
-21 April 2026 (Tier 3 discovery pass + secret-exposure remediation).
+22 April 2026 (Tier 3 follow-up execution: TASKS.md #4/#5/#6 closed, JWT rotation folded in, three latent bugs fixed in code and documented as pre-flight checks in `../WORKFLOW.md`).

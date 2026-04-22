@@ -41,14 +41,19 @@ Explicitly **checked and not applied**:
 
 Open items that could not be resolved from the repo, brief, ACCOUNTS.md, or AWS CLI calls. All non-urgent — none blocks handover.
 
+### Still open
+
 1. **GitHub secret-scanning / push-protection alert for `AKIA…OP7D`.** Did you receive an email from GitHub between 8 Apr and the key's deactivation? If yes, that explains the CloudTrail negative and reframes the incident as "detection worked". Either way the outcome's the same, but helpful for the post-mortem in `docs/incident/README.md`.
 2. **AWS GuardDuty / Trusted Advisor.** Is GuardDuty enabled in account `571600836975`? Did Trusted Advisor's "Exposed Access Keys" check ever fire? `ReadOnlyAccess` doesn't show me GuardDuty detector state directly.
-3. **`NODE_TLS_REJECT_UNAUTHORIZED` env var on the current task definition.** Its value is not visible to me. If it's `0`, the Node runtime is ignoring TLS certificate validation — dangerous. Please check and, if set to `0`, either remove or change to `1` as part of the Secrets Manager migration.
-4. **`PGSSLMODE` env var value.** Same visibility limitation. Expected value: `require` or `verify-full`. If it's `disable`, TLS to the database is off.
-5. **`NODE_ENV` env var value.** Expected `production`. Worth verifying — some downstream libraries behave differently if unset.
-6. **Seed admin credential.** Rotated in the app on 2026-04-21 (confirmed in chat). For a DR scenario (restore from blank DB), an initial password is needed via `SEED_ADMIN_PASSWORD`. Is there a value you'd like me (or you) to add to Secrets Manager for future first-boots? Keep blank and the app will refuse to boot on an empty DB, which is acceptable — we just need to document which approach you prefer.
 7. **SES production-access status for this account.** The Disrupts Media brief surfaced that SES production access was denied on another account (case `177618481600800`). Has Taranis Capital a live SES production-access approval, or is the Dataroom's SES wiring blocked on the same sandbox→production ticket? Blocks invite + MFA-code emails when SES is wired.
-8. **Deployment process owner beyond your laptop.** Currently `deploy.bat` runs from your Windows machine only. Bus-factor-of-one. The `.github/workflows/deploy.yml` is in place but was pointed at the dead `taranis-deploy` GitHub Secret — needs reconfiguring after the new `taranis-dataroom-deploy` user is created. Do you want to wire CI-deploy now, or stay on laptop-deploy until post-go-live?
+
+### Closed 2026-04-22
+
+3. **~~`NODE_TLS_REJECT_UNAUTHORIZED` env var~~** — confirmed `0` on task-def `:4`. **Removed entirely** from task-def `:5`/`:6`. The latent pg-SSL bug it was masking is now fixed in code (`packages/api/src/db.js` sets explicit `ssl: { rejectUnauthorized: false }` gated on `PGSSLMODE`).
+4. **~~`PGSSLMODE` env var~~** — confirmed `require` on task-def `:4`, retained. Upgrade to `verify-full` paired with TASKS.md #13.
+5. **~~`NODE_ENV` env var~~** — confirmed `production` on task-def `:4`, retained.
+6. **~~Seed admin credential~~** — pre-positioned as `taranis-dataroom/seed/admin-6Wa82t` in Secrets Manager, deliberately **not** referenced from the running task-def. Exists for DR restore-from-blank-DB only.
+8. **~~Deployment process owner~~** — CI wired up. `taranis-dataroom-deploy` IAM user created 2026-04-22 with least-privilege policy, GitHub repo secrets updated, auto-deploy on push to `main` now active. `deploy.bat` pinned to `AWS_PROFILE=TaranisCapital`. Bus-factor reduced.
 
 ---
 
@@ -231,20 +236,20 @@ Short index (the full entries with deadlines and commands live in `../../TASKS.m
 
 Complete enumeration of every secret the Dataroom needs. Names and locations only — no values. See `docs/incident/secrets-inventory.md` for the 8 April 2026 exposure record (closed) and `docs/incident/README.md` for the remediation trail.
 
-| Secret | What it is | **Where it lives TODAY** | Target state | Rotation schedule | Who has access |
-|---|---|---|---|---|---|
-| RDS master password | PostgreSQL password for DB user `taranis` | **Plaintext `POSTGRES_PASSWORD` env var in ECS task definition `taranis-dataroom:4`** | Secrets Manager → ECS `secrets:` block | To be rotated in TASKS.md #6 (post-item-5); then quarterly | Mark (via ECS task def) |
-| JWT signing secret | HMAC secret for access+refresh JWTs (15-min access, opaque refresh) | Plaintext `JWT_SECRET` env var in task def | Secrets Manager | Annual or on-breach | Mark |
-| Seed admin password (`SEED_ADMIN_PASSWORD`) | Bootstraps the initial admin user on a blank DB; app refuses to boot if absent and no admin exists | NOT YET SET (the old hard-coded `Admin123!` default has been scrubbed from code). Admin user already exists in prod and was rotated in-app on 2026-04-21. | Optional Secrets Manager entry, only needed for DR/restore flow | N/A (one-shot at bootstrap) | Mark |
-| Amazon SES SMTP credentials | Invite + MFA-code + broadcast-notice emails | Not yet wired. SES integration deferred until SES production access is confirmed. | Secrets Manager | Annual | Mark once created |
-| SMS MFA provider credentials | SMS fallback for MFA codes | Not wired. Provider not decided (Twilio / SNS SMS / AWS End User Messaging SMS). | Secrets Manager | Annual | Mark once created |
-| RDS TLS certificate bundle | For verifying the RDS server cert when `PGSSLMODE=verify-full` | Not required today (`PGSSLMODE` value unknown — see Questions for Mark #4) | App-bundled root CA or Secrets Manager | N/A | N/A |
+| Secret | What it is | **Where it lives TODAY** | Rotation schedule | Who has access |
+|---|---|---|---|---|
+| RDS master password | PostgreSQL password for DB user `taranis` | **AWS Secrets Manager:** `taranis-dataroom/rds/master-33xQ2s` (JSON body with `username` + `password` keys). Referenced from ECS task-def `:6` via `secrets:` block with `:password::` JSON-key selector. Value rotated 2026-04-22; RDS server password modified in the same window. | Quarterly manual rotation on calendar (option for automatic via Secrets Manager rotation Lambda deferred — TASKS.md backlog) | `ecsTaskExecutionRole` via scoped inline policy `taranis-dataroom-secrets-access`; Mark via AWS Console |
+| JWT signing secret | HMAC secret for access+refresh JWTs (15-min access, opaque refresh) | **AWS Secrets Manager:** `taranis-dataroom/jwt/signing-616MGX` (plaintext value). Referenced from ECS task-def `:6` via `secrets:` block. Value rotated 2026-04-22 — invalidated all live sessions at rotation time (expected, no user impact pre-go-live). | Annual or on-breach | Same as RDS row |
+| Seed admin password (`SEED_ADMIN_PASSWORD`) | Bootstraps the initial admin user on a blank DB; app refuses to boot if absent and no admin exists | **AWS Secrets Manager:** `taranis-dataroom/seed/admin-6Wa82t` (plaintext value). **Deliberately NOT referenced** from the running task definition — pre-positioned for DR restore-from-blank-DB scenarios only. Exec role's inline policy lists only `rds/master` and `jwt/signing`, so running tasks cannot read this secret. | N/A (one-shot at bootstrap in DR scenarios) | Mark via Console only |
+| Amazon SES SMTP credentials | Invite + MFA-code + broadcast-notice emails | Not yet wired. SES integration deferred until SES production access is confirmed. | Annual | Mark once created |
+| SMS MFA provider credentials | SMS fallback for MFA codes | Not wired. Provider not decided (Twilio / SNS SMS / AWS End User Messaging SMS). | Annual | Mark once created |
+| RDS TLS certificate bundle | For verifying the RDS server cert when `PGSSLMODE=verify-full` | Not required today. `PGSSLMODE=require` (encrypt, do not verify cert). App's `packages/api/src/db.js` configures `ssl: { rejectUnauthorized: false }` gated on `PGSSLMODE`, matching the prior effective posture but scoped to the one Postgres connection rather than a global `NODE_TLS_REJECT_UNAUTHORIZED=0`. Upgrade to `verify-full` paired with TASKS.md #13 (requires bundling RDS CA chain in the image). | N/A | N/A |
 
-**Known historical exposure (closed):** the 8 April 2026 commit of `DEPLOY_NOW.md` to the public `Walkerma75/taranis-dataroom` repo leaked an AWS access key (`AKIA…OP7D`), its secret, the RDS master password at the time, and the default admin password `Admin123!`. Both AWS keys on the `taranis-deploy` user are now deactivated. The admin password was rotated in-app on 2026-04-21. The RDS master password rotation is pending (TASKS.md #6). Git history was scrubbed on 2026-04-21 via `git filter-branch`; zero post-scrub hits verified. CloudTrail review (`docs/incident/cloudtrail-akia-OP7D.json`) returned zero events across the full 90-day Event-history window — key appears never to have been used.
+**Known historical exposure (closed):** the 8 April 2026 commit of `DEPLOY_NOW.md` to the public `Walkerma75/taranis-dataroom` repo leaked an AWS access key (`AKIA…OP7D`), its secret, the RDS master password at the time, and the default admin password `Admin123!`. Both AWS keys on the `taranis-deploy` user are now deactivated; the user itself was deleted 2026-04-22 as part of the Phase 1 hardening. The admin password was rotated in-app on 2026-04-21. **The RDS master password was rotated 2026-04-22** via the atomic Secrets-Manager-plus-RDS-Modify sequence; the JWT signing secret was folded into the same rotation window because it had been plaintext in the ECS task definition for the full window since 8 April. Git history was scrubbed on 2026-04-21 via `git filter-branch`; zero post-scrub hits verified. CloudTrail review (`docs/incident/cloudtrail-akia-OP7D.json`) returned zero events across the full 90-day Event-history window — key appears never to have been used.
 
 **`.env` on disk (local-dev only):** the repo root contains a `.env` file (properly gitignored, never committed) that carries Mark's local-dev values. Not an exposure surface.
 
-**Access:** the ECS task definition is world-readable to anyone with `ecs:DescribeTaskDefinition` on the account. With plaintext env vars, that means any IAM principal with account-level ECS read has the current production credentials. Moving to Secrets Manager (TASKS.md #5) tightens this to `secretsmanager:GetSecretValue` on specific secrets, which is role-scoped.
+**Access control after 2026-04-22:** the ECS task definition `:6` no longer contains any plaintext secret values. `ecs:DescribeTaskDefinition` on the account now reveals only ARNs, not values. Retrieving the actual secret values requires `secretsmanager:GetSecretValue` on the specific secret ARN — which the inline policy `taranis-dataroom-secrets-access` grants to `ecsTaskExecutionRole` for only `rds/master` and `jwt/signing` (not `seed/admin`). Same-account KMS decrypt is granted transparently via the default `aws/secretsmanager` key policy, so no explicit KMS grant was required.
 
 ---
 
@@ -435,29 +440,42 @@ Things that only live in Mark's head (or in scattered chat / spec notes), captur
 Live risks, in rough order of severity. Every item has a TASKS.md ticket.
 
 - **Object Lock is OFF on `taranis-dataroom-documents-prod`** — DFSA retention gap. Object Lock is irreversible once enabled, so the fix requires an explicit decision on retention mode (Compliance vs Governance) and retention window (presumably 8 years to match the audit-log commitment). TASKS.md #1, Tier 1, deadline 2026-05-15.
-- **All secrets in plaintext on the ECS task definition.** RDS password, JWT signing secret, S3 bucket name all live as env vars. Anyone with `ecs:DescribeTaskDefinition` at the account level can read them. TASKS.md #5, Tier 1.
 - **RDS storage not encrypted at rest.** `storageEncrypted: false`, `kmsKeyId: null` — all seven visible snapshots likewise unencrypted. Fixing requires snapshot → restore to an encrypted instance → cutover. TASKS.md #8, Tier 2.
 - **RDS `rds.force_ssl = 0`.** TLS to the DB is enforceable only from the app side (`PGSSLMODE`), not from the server. One mis-set env var could open cleartext connections in-VPC. TASKS.md #13, Tier 2.
 - **No restore or rollback drill has ever been run.** Tier 3 hallmark risk. TASKS.md #2, #3, both Tier 1, deadline 2026-05-31.
-- **`taranis-deploy` IAM policy is dangerously broad.** `AmazonS3FullAccess`, `AmazonRoute53FullAccess`, `CloudFrontFullAccess`, `AmazonEC2ContainerRegistryPowerUser`, plus inline ECS/IAM/Logs on `Resource: "*"`. The user's only key is deactivated, so blast radius today is zero — but the policy exists and could be reattached. Replace with least-privilege `taranis-dataroom-deploy`. TASKS.md #4.
 - **ALB SSL policy `ELBSecurityPolicy-2016-08`.** Allows TLS 1.0/1.1. Spec called for "TLS 1.3 only". TASKS.md #12, Tier 2.
 - **No WAF on the ALB.** Spec called for rate-limiting + OWASP. TASKS.md #14, Tier 2.
 - **Zero CloudWatch alarms.** No visibility into ALB 5xx, ECS unhealthy tasks, RDS CPU, Secrets Manager rotation failures. TASKS.md #10.
 - **`/ecs/taranis-dataroom` log group has no retention.** Cost creep. TASKS.md #11.
-- **Image tags all `:latest`; task definition reverting doesn't give deterministic rollback.** TASKS.md #15.
-- **ECS deployment circuit breaker disabled** — a failed deploy will keep replacing healthy tasks with broken ones. TASKS.md #16.
-- **Deployment bus-factor of one.** `deploy.bat` from Mark's laptop. GitHub Actions workflow written but not wired to a working deploy principal. TASKS.md #4 unblocks CI-deploy.
+- **Image tags all `:latest` on `deploy.bat`**; task definition reverting doesn't give deterministic rollback. CI workflow already tags with both `:latest` and `:${{ github.sha }}`, so CI deploys do have a unique-tag path — deploy.bat does not. TASKS.md #15.
+- **ECS deployment circuit breaker disabled** — a failed deploy will keep replacing healthy tasks with broken ones. Felt this directly during the 2026-04-22 rotation where multiple `:5` task-def boot attempts failed silently (exit code 1 on essential container) and ECS kept trying. TASKS.md #16.
 - **SES production-access status unknown on `TaranisCapital` account.** Blocks invite/MFA/broadcast emails when SES is finally wired. Question for Mark #7, TASKS.md #7.
 - **No CRR from `eu-west-2` to `eu-west-1`.** Spec called for it. TASKS.md #20.
 - **Single-AZ RDS.** One AZ impairment = ~30-minute Dataroom outage. TASKS.md #19.
 - **NAT gateway is single-AZ too.** An `eu-west-2a` AZ outage kills outbound internet for both private-subnet ranges even though the second private subnet is in `eu-west-2b` — because both private route tables point at the same NAT. Same-line consideration as RDS Multi-AZ.
-- **`NODE_TLS_REJECT_UNAUTHORIZED` and `PGSSLMODE` env-var values unknown** — could be disabling TLS verification. Question for Mark #3 and #4.
 - **ECR image scanning result state `null`** — scans appear not to have completed on the current images despite `scanOnPush: true`. No CVE visibility.
 - **No pre-commit secret scanning** (e.g. `gitleaks`, `detect-secrets`). Would have caught the 8 April exposure. TASKS.md #17 covers the GitHub-side protection; a pre-commit hook is a worthwhile hardening.
-- **`deploy.bat` is Windows-only.** Any future co-owner on macOS / Linux would need a portable equivalent (or to rely on GitHub Actions, once wired).
+- **`deploy.bat` is Windows-only.** Any future co-owner on macOS / Linux would need a portable equivalent. CI via GitHub Actions is now the portable path (wired 2026-04-22).
 - **Product spec references "Pro-curo V5 stack alignment"** — deliberately ignored per the 6 April decision log; noted here so future readers don't accidentally re-introduce shared dependencies.
 - **PDF watermarking** (user email + UTC timestamp stamped into the PDF at delivery time) — spec requirement, not implemented. Product-level TASKS.md #22.
 - **Placeholder logo still in the React bundle.** TASKS.md #23.
+
+### Resolved 2026-04-22
+
+The Tier 3 discovery-follow-up work completed this date closed out five of the original §12 risks plus surfaced and fixed three latent bugs that had been masked by the old configuration.
+
+- **~~All secrets in plaintext on the ECS task definition~~** → moved to Secrets Manager (`rds/master`, `jwt/signing`, `seed/admin`), task-def `:6` references them via `secrets:` block. Plaintext env vars for `POSTGRES_PASSWORD` and `JWT_SECRET` gone. TASKS.md #5 closed.
+- **~~RDS master password exposure from 8 April leak~~** → password rotated 2026-04-22 via the atomic Secrets-Manager-plus-RDS-Modify sequence. TASKS.md #6 closed. Quarterly rotation reminder on calendar.
+- **~~JWT signing secret plaintext in task def since 8 April~~** → rotated in the same window (folded into #5/#6). All live sessions invalidated at rotation time; no user impact pre-go-live.
+- **~~`taranis-deploy` IAM policy dangerously broad~~** → user deleted 2026-04-22. Replaced with `taranis-dataroom-deploy` user carrying a least-privilege policy scoped to the Dataroom's ECR repos, ECS cluster/service, and `iam:PassRole` on the two ECS roles. No S3 in the policy (deploy flow never touches S3 — runtime does, via the task role). TASKS.md #4 closed.
+- **~~`NODE_TLS_REJECT_UNAUTHORIZED`=0 globally disabling TLS verification~~** → env var removed entirely from task-def `:5`/`:6`. Replaced with explicit `ssl: { rejectUnauthorized: false }` in `packages/api/src/db.js` scoped to the Postgres connection only.
+- **~~Deployment bus-factor of one~~** → CI auto-deploy on push to `main` now active. `deploy.bat` retained as a fallback, pinned to `AWS_PROFILE=TaranisCapital`.
+
+Three **latent bugs** were exposed during the rotation (all documented as Tier 3 pre-flight checks in `../WORKFLOW.md` → Latent bugs exposed during Tier 3 migrations):
+
+- **pg.Pool had no explicit `ssl:` config** — connectivity worked in prod because `NODE_TLS_REJECT_UNAUTHORIZED=0` bypassed Node's TLS validator globally. Removing that env var (correctly) exposed `self-signed certificate in certificate chain` against the RDS cert. Fixed in `packages/api/src/db.js` commit `5bdd877`.
+- **Per-package Dockerfiles used `npm ci` without a workspace lockfile** — monorepo uses npm workspaces with the authoritative `package-lock.json` at the repo root; `packages/api` and `packages/web` carry no lockfile of their own. `npm ci` fails on a fresh CI build because the optional `package-lock.json*` glob silently passes the copy step. Fixed in both Dockerfiles by switching to `npm install`. Proper fix (build from repo-root context) deferred to TASKS.md backlog.
+- **Frontend API base URL defaulted to `http://localhost:4000`** in four `packages/web/src/` files — since Vite bakes env vars at build time (not runtime), any build that didn't pass `VITE_API_URL` shipped with the absolute localhost URL baked into the bundle. Users with cached JWTs in `localStorage` never exercised the login form, so the bug was invisible. JWT rotation forced a fresh login and exposed it. Fixed by defaulting to relative `/api` (which nginx in the web container proxies to the api container in prod, and `vite.config.js` dev proxy handles in local dev). Commit `e1e68db`.
 
 ---
 
@@ -500,19 +518,52 @@ Caveat: images tagged `:latest` mean the "revert to revision N" result is "revis
 
 ## Appendix B — Atomic RDS-rotation + Secrets-Manager ordering
 
-Ordering matters. This is the sequence from TASKS.md #5 + #6:
+**Corrected 2026-04-22 after executing this sequence in production.** The original version of this appendix had a logical error — step 1 said "fresh random password" but step 4 claimed the Secrets Manager value still equalled the current RDS password. Those are incompatible, and rolling the new task-def to production while Secrets Manager held a value that didn't match RDS would have caused immediate auth failure on new tasks. The corrected sequence below is what actually works.
 
-1. Create Secrets Manager secret (e.g. `taranis-dataroom/rds/master`) with a fresh random password, KMS encrypted under the AWS-managed `aws/secretsmanager` key (or a dedicated CMK if you want more control).
-2. Grant the ECS **execution role** `secretsmanager:GetSecretValue` on that specific secret ARN + `kms:Decrypt` on the KMS key (inline policy is fine; scope to this one secret, not `*`).
-3. Register a new ECS task-definition revision (`taranis-dataroom:5`) that replaces the plaintext `POSTGRES_PASSWORD` env var with a `secrets:` block referencing the secret ARN + the `password` JSON key.
-4. `update-service` to the new revision, `force-new-deployment`, wait for deployment stability — the running tasks now read the password from Secrets Manager, **but the value inside Secrets Manager still equals the current RDS password** (unrotated).
-5. Rotate the RDS master password to a NEW random value matching what you put into Secrets Manager in step 1. Options:
-   - AWS Console / CLI `aws rds modify-db-instance --master-user-password <new> --apply-immediately` — **DO NOT** forget `--apply-immediately`, otherwise it queues for the maintenance window.
-   - OR use Secrets Manager automatic rotation with the managed PostgreSQL rotation Lambda.
-6. ECS tasks are now reading the new password from Secrets Manager and authenticating successfully against the rotated RDS.
+### The correct sequence
 
-**Do NOT run `deploy.bat` between steps 3 and 5** — the old task definition still references the old plaintext password; deploying it against the rotated RDS will break connections.
+1. **Create the Secrets Manager secrets** — three in our case: `taranis-dataroom/rds/master` (JSON `{"username":"taranis","password":"…"}`), `taranis-dataroom/jwt/signing` (plaintext), `taranis-dataroom/seed/admin` (plaintext, DR pre-position). KMS encrypted under the AWS-managed `aws/secretsmanager` key (same-account principals get `kms:Decrypt` via default key policy — no explicit KMS grant needed).
+2. **Populate `rds/master` with the CURRENT RDS password**, not a new random value. This makes step 4's service roll a no-op as far as DB credentials are concerned — new tasks fetch from Secrets Manager instead of env, but the value is the same as the plaintext they were using before. If you seed with a new value here, the roll breaks.
+3. **Grant the ECS execution role `secretsmanager:GetSecretValue`** on the specific secret ARNs (runtime-referenced only — `rds/master` and `jwt/signing`, not `seed/admin`) via an inline policy. Scope to ARNs explicitly; do not wildcard `taranis-dataroom/*`.
+4. **Register a new ECS task-definition revision** that replaces the plaintext `POSTGRES_PASSWORD`, `JWT_SECRET`, and `NODE_TLS_REJECT_UNAUTHORIZED` env vars. Add a `secrets:` block referencing the two runtime ARNs (`rds/master` with `:password::` JSON-key selector, `jwt/signing` plain).
+5. **`update-service` to the new revision, `force-new-deployment`, wait for stability.** Tasks now read the CURRENT RDS password from Secrets Manager. Service stays healthy. **FREEZE WINDOW OPENS HERE** — no other deploys, no pushes to `main` (if CI auto-deploys on push).
+6. **Overwrite `rds/master` with a NEW random password.** Running tasks don't notice — their env var was populated at startup and doesn't re-read. Existing connections continue to work (Postgres authenticates at connect time, not per query).
+7. **Rotate the RDS master password to the SAME new value** via `aws rds modify-db-instance --master-user-password <new> --apply-immediately` (or RDS Console → Modify → Credentials settings → Self managed). **DO NOT** omit `--apply-immediately` or the rotation queues for the maintenance window. At this point existing Postgres connections from running tasks continue to work; any NEW connection attempts fail (they'd use the old cached env value against the rotated server).
+8. **`force-new-deployment` again** so fresh tasks boot, fetch the NEW password from Secrets Manager, and authenticate cleanly against the rotated RDS. Existing stale-cached tasks drain as the new ones come up healthy. Brief ~30s window where some in-pool reconnections fail — acceptable pre-go-live, minimal post-go-live (matters more if the app is chatty).
+9. **FREEZE WINDOW CLOSES.** Normal deploys resume.
+
+### What this looks like in total calendar time
+
+- Steps 1-4: discovery/prep, as much time as you need. Do them at desk, not in the rotation window.
+- Steps 5-9: single contiguous ~10-15 minute window. Don't stretch it.
+
+### Cross-rotating the JWT signing secret in the same window
+
+If the JWT secret has been plaintext in the task definition since deployment, it has the same exposure surface as the RDS password (anyone with `ecs:DescribeTaskDefinition` can read it). Rotate it in the same window:
+
+- Secrets Manager `jwt/signing` initially seeded with the CURRENT JWT secret value (step 2)
+- Overwritten with a new random value at step 6 (same step as RDS)
+- The `force-new-deployment` at step 8 makes tasks re-read it — all JWTs issued before that point fail verification and users re-auth. Pre-go-live, free. Post-go-live, schedule in a quiet window and warn users.
+
+### Pre-flight items for any Tier 3 secret rotation on a containerised stack
+
+See `../WORKFLOW.md` → "Latent bugs exposed during Tier 3 migrations" for the full set. The short version:
+
+- Grep the frontend for any absolute `localhost:` URL used as a fallback — Vite/webpack/Next.js bake env vars at build time and a missing `VITE_API_URL` will ship with a broken localhost URL
+- Grep the backend for DB/Redis/etc. clients with no explicit TLS config — may be relying on `NODE_TLS_REJECT_UNAUTHORIZED=0` which you're about to remove
+- `ls packages/*/package-lock.json` — workspace lockfile coverage; `npm ci` in a per-package Dockerfile fails without a per-package lock
+
+Each of these costs ~2 minutes at discovery. Hitting one during the rotation window costs 30-60 minutes plus a partial outage.
+
+### Execution record, 2026-04-22
+
+Actual run on this date:
+
+1. Phase 1 (#4) — `taranis-dataroom-deploy` user created via AWS Console, policy attached, access key captured into Bitwarden, GitHub repo secrets updated, `deploy.bat` pinned to `AWS_PROFILE=TaranisCapital`, CLI smoke tests green, deactivated `taranis-deploy` user deleted.
+2. Phase 2 (#5 + #6 + JWT) — three Secrets Manager secrets created (step 1), initially with newly-generated random values in `rds/master` (deviation from the corrected sequence above — fixed mid-run at "step 2.4.5" by overwriting `rds/master` back to the current RDS password `TaranisCap2026xSecure`). Exec-role inline policy attached (step 3). Task-def `:5` registered via ECS Console (step 4). Service roll to `:5` failed because three latent bugs surfaced simultaneously: pg.Pool had no `ssl:` config (fixed in `packages/api/src/db.js`), Dockerfile `npm ci` failed without workspace lockfile (fixed in both Dockerfiles), and the initial roll happened before the Secrets Manager sync-to-current-password (recovered by registering `:6` via CI after code fix + reverting SM to current password). Task-def `:6` stabilised (step 5). `rds/master` overwritten to new random, RDS Modify executed with `--apply-immediately` to the same new value, `force-new-deployment` fired (steps 6-8). Final blocker was a fourth latent bug — frontend defaulted `VITE_API_URL` to `http://localhost:4000` when unset, which CI-built images didn't set; fixed in `packages/web/src/` across four files and shipped via CI; login confirmed working on the final task.
+
+Total elapsed from Phase 1 start to login confirmed: approximately 4 hours, vs the ~30-minute estimate in the original runbook. The delta was entirely the three latent bugs plus the Appendix-B ordering bug — none of which are project-specific, all now documented as pre-flight checks in `../WORKFLOW.md`.
 
 ---
 
-*Written 2026-04-21 during the Tier 3 discovery pass. Updates go through a normal pull request + Mark's review on `Walkerma75/taranis-dataroom`.*
+*Written 2026-04-21 during the Tier 3 discovery pass; corrected 2026-04-22 after execution. Updates go through a normal pull request + Mark's review on `Walkerma75/taranis-dataroom`.*
