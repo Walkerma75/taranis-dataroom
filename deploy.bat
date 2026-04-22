@@ -6,6 +6,7 @@ REM Prerequisites: Docker Desktop running, AWS CLI installed
 REM ============================================================
 
 set AWS_REGION=eu-west-2
+set AWS_PROFILE=TaranisCapital
 set AWS_ACCOUNT_ID=571600836975
 set ECR_REGISTRY=%AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com
 
