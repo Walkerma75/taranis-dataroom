@@ -74,14 +74,14 @@ Overview, Private Placement Memorandum, Legal Documents, Financials, Technical, 
 - **RDS password rotation atomic sequence.** The canonical ordering lives in `MIGRATION-INVENTORY.md` Appendix B (corrected 2026-04-22 after executing in prod). Key point: Secrets Manager must initially hold the CURRENT RDS password before you roll the new task-def, then you update SM to the new value AND rotate RDS AND force-new-deployment in a single ~10-min freeze window. Out-of-order is a production outage.
 - **"CloudFront OAC presigned URLs, 5-minute TTL" is a spec plan, not the implementation.** Today documents stream through the ECS API via the task role, not through CloudFront. If a user reports a broken PDF link, it's usually an auth-token timeout or an S3 key mismatch, not OAC.
 - **`deploy.bat` uses `:latest` tags; CI uses `:latest` + `:${{ github.sha }}`.** Switching deploy.bat to unique tags is TASKS.md #15.
-- **Frontend `VITE_API_URL` defaults to relative `/api`.** Any build without this env var set still produces a working bundle (nginx proxies). An earlier defaulting to `http://localhost:4000` caused a latent bug that only surfaced when cached JWTs were invalidated — fixed 2026-04-22. See `../WORKFLOW.md` → "Latent bugs exposed during Tier 3 migrations" if planning a rotation elsewhere.
+- **Frontend `VITE_API_URL` defaults to relative `/api`.** Any build without this env var set still produces a working bundle (nginx proxies). An earlier defaulting to `http://localhost:4000` caused a latent bug that only surfaced when cached JWTs were invalidated — fixed 2026-04-22. See `C:\Users\mark\Claude Cowork\Other\Admin\WORKFLOW.md` → "Latent bugs exposed during Tier 3 migrations" if planning a rotation elsewhere.
 - **pg.Pool has explicit `ssl:` config in `packages/api/src/db.js`.** Gated on `PGSSLMODE`. Encrypt-without-verify (`rejectUnauthorized: false`) until the RDS CA bundle is shipped with the image (TASKS.md #13 paired with `rds.force_ssl=1`).
 
 ## Repo
 
 - **GitHub:** `Walkerma75/taranis-dataroom` — **private**, personal account (not an org). Branch-protection and push-protection features on personal-account private repos are Pro-plan-only and were not available at the time of writing.
 - **Branch:** `main`.
-- **Filesystem:** working clone lives in the sibling `Claude Cowork/Taranis Dataroom/taranis-dataroom/` folder.
+- **Filesystem:** working clone lives at `C:\Users\mark\Claude Cowork\Taranis Capital\Code\Taranis Dataroom\taranis-dataroom\`.
 
 ## Project files
 
@@ -95,4 +95,4 @@ Overview, Private Placement Memorandum, Legal Documents, Financials, Technical, 
 
 ## Last updated
 
-22 April 2026 (Tier 3 follow-up execution: TASKS.md #4/#5/#6 closed, JWT rotation folded in, three latent bugs fixed in code and documented as pre-flight checks in `../WORKFLOW.md`).
+22 April 2026 (Tier 3 follow-up execution: TASKS.md #4/#5/#6 closed, JWT rotation folded in, three latent bugs fixed in code and documented as pre-flight checks in `C:\Users\mark\Claude Cowork\Other\Admin\WORKFLOW.md`).
