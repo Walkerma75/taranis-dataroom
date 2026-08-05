@@ -6,9 +6,21 @@
  * ---------------------------------------------------------------------------
  * The backend shipped in Phase 1a is a STUB. It does not inspect a single byte.
  * It returns the verdict 'pending' and it says so at startup and on /health.
- * Company uploads are quarantined from Taranis-side download while a file is
- * anything other than 'clean', so a stubbed scanner means nothing a company
- * uploads becomes downloadable until a real scanner is wired.
+ *
+ * THE UNSCANNED PATH IS AN ACCEPTED RISK, NOT AN OUTSTANDING DEFECT.
+ * Mark confirmed option A on 2026-08-06 and accepted the exposure for the beta
+ * cohort explicitly: a small number of clients have been told that uploads in
+ * 1a are not scanned and are content to use the portal on that basis
+ * (HANDOVER-C004 §3.1, ANSWERED). Reviewers can therefore open what companies
+ * submit. The trigger to revisit is widening the cohort beyond clients who have
+ * accepted the position, not a date.
+ *
+ * What that means for `isDownloadable` at the bottom of this file: with no
+ * scanner configured, an unscanned file IS downloadable and the caller is told
+ * it was never inspected. As soon as a real backend is configured the rule
+ * tightens on its own, because then 'pending' means scanning has not finished
+ * or has failed rather than that nobody is scanning. An 'infected' verdict is
+ * quarantined under either backend.
  *
  * WHY A STUB RATHER THAN CLAMAV. HANDOVER-CW004 §3 item 2 recommended ClamAV
  * in the API container. HANDOVER-C004 §3.1 overrode it on sizing: the live ECS
@@ -25,10 +37,9 @@
  * all built and exercised now; enabling a real engine later changes only the
  * backend and the task sizing, not the call sites.
  *
- * THIS IS A RECORDED GO-LIVE BLOCKER for real company uploads. See
- * MIGRATION-INVENTORY.md §12 and the HANDOVER-CW004 completion log. It is not
- * a regression — uploads have never been scanned — but it must not reach a real
- * counterparty as it stands.
+ * The gap is recorded in MIGRATION-INVENTORY.md §12 and in the HANDOVER-CW004
+ * completion log, as an accepted risk with a named trigger to revisit. It is
+ * not a regression either: uploads on this platform have never been scanned.
  *
  * INTERFACE
  *   scan(key, { filename, size, stream }) -> Promise<{ state, backend, detail }>
@@ -44,10 +55,12 @@ export const SCAN_STATES = ['pending', 'clean', 'infected', 'error'];
 /**
  * The Phase 1a backend. Deliberately never returns 'clean'.
  *
- * Returning 'clean' would be the single most dangerous line in this file: every
- * downstream check keys off that value, and a stub that lies would silently
- * open Taranis-side download of unscanned counterparty files. 'pending' keeps
- * the file quarantined and keeps the gap visible in the data.
+ * Returning 'clean' would be the single most dangerous line in this file. It
+ * would record, in the database and for ever, that a file had been inspected
+ * and found safe when nothing had looked at it, and that claim would outlive
+ * the beta and survive a real scanner being wired. 'pending' plus
+ * `scan_backend = 'stub'` keeps the truth in the data, so exactly which files
+ * were never examined can be found later and re-scanned.
  */
 export class StubScanner {
   constructor({ warnOnUse = true } = {}) {
@@ -57,16 +70,14 @@ export class StubScanner {
   }
 
   describe() {
-    return 'STUB — no scanning is performed, uploads stay quarantined (see services/scanner.js)';
+    return 'STUB — no scanning is performed, company uploads are not inspected '
+         + '(accepted beta risk, see services/scanner.js)';
   }
 
   async scan(key, { filename } = {}) {
     this.scanned++;
     if (this.warnOnUse) {
-      console.warn(
-        `[scanner] STUB scanner: ${filename || key} was NOT scanned. ` +
-        'The file stays quarantined from Taranis-side download.'
-      );
+      console.warn(`[scanner] STUB scanner: ${filename || key} was NOT scanned.`);
     }
     return {
       state: 'pending',
@@ -147,9 +158,54 @@ export function resetScanner() {
 }
 
 /**
- * A file is downloadable by Taranis only once a scanner has cleared it.
- * Anything else — pending, infected, error — is quarantined.
+ * Whether Taranis may download a company file, given its recorded scan state
+ * and the scanner that is actually configured now.
+ *
+ * The second argument is the point of this function. Blocking everything that
+ * is not 'clean' would be the obvious rule, and it would make the portal
+ * useless under the stub: nothing would ever be downloadable, so no reviewer
+ * could open anything a company submitted. Mark accepted the unscanned path for
+ * the beta cohort precisely so that the portal works (HANDOVER-C004 §3.1), so
+ * the rule is:
+ *
+ *   infected            -> never, under any backend. A verdict is a verdict.
+ *   clean               -> always.
+ *   pending / error     -> allowed ONLY while no scanner is configured, i.e.
+ *                          the stub is active and "not scanned" means nobody is
+ *                          scanning. With a real backend the same state means
+ *                          scanning has not finished or has failed, which is a
+ *                          reason to wait, so it is refused.
+ *
+ * The rule therefore tightens by itself the moment a real backend is
+ * configured, with no second change and nothing to remember.
+ *
+ * @param {string} scanState
+ * @param {object} [opts]
+ * @param {string} [opts.scannerKind] - active backend; defaults to the live one
+ * @returns {{allowed: boolean, unscanned: boolean, reason: string|null}}
  */
-export function isDownloadable(scanState) {
-  return scanState === 'clean';
+export function downloadDecision(scanState, { scannerKind = getScanner().kind } = {}) {
+  if (scanState === 'infected') {
+    return {
+      allowed: false,
+      unscanned: false,
+      reason: 'This file was quarantined by the security scan and cannot be downloaded.',
+    };
+  }
+  if (scanState === 'clean') {
+    return { allowed: true, unscanned: false, reason: null };
+  }
+  if (scannerKind === 'stub') {
+    return { allowed: true, unscanned: true, reason: null };
+  }
+  return {
+    allowed: false,
+    unscanned: false,
+    reason: 'This file has not yet been cleared by the security scan and cannot be downloaded.',
+  };
+}
+
+/** Convenience wrapper for callers that only need the yes or no. */
+export function isDownloadable(scanState, opts) {
+  return downloadDecision(scanState, opts).allowed;
 }

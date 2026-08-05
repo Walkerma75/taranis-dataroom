@@ -239,9 +239,10 @@ async function autoSeed() {
     if (scanner.kind === 'stub') {
       console.warn(`[scanner] ${scanner.describe()}`);
       console.warn(
-        '[scanner] Company uploads will be accepted but NOT scanned, and will ' +
-        'stay quarantined from Taranis-side download. This is a recorded ' +
-        'go-live blocker for real company uploads: see MIGRATION-INVENTORY.md.'
+        '[scanner] Company uploads will be accepted and served WITHOUT being ' +
+        'scanned. This is an accepted beta risk, not a defect (HANDOVER-C004 ' +
+        '§3.1), and the trigger to revisit it is widening the client cohort. ' +
+        'See MIGRATION-INVENTORY.md §12.'
       );
     } else {
       console.log(`[scanner] Company uploads scanned by ${scanner.describe()}`);

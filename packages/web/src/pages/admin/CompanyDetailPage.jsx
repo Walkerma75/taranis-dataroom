@@ -224,15 +224,15 @@ export default function CompanyDetailPage() {
   // -------------------------------------------------------------------- Files
   const filesTab = (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      {files.some((f) => f.scanState !== 'clean') && (
+      {files.some((f) => f.scanState === 'pending' || f.scanState === 'error') && (
         <Alert
           type="warning"
           showIcon
           icon={<WarningOutlined />}
-          message="Submitted files cannot be downloaded yet"
-          description="No virus scanner is configured on this deployment, so every company upload
-            stays quarantined. This is a known gap and is recorded as a go-live blocker for real
-            company uploads."
+          message="These files have not been checked for viruses"
+          description="No virus scanner is configured on this deployment, so nothing a company
+            uploads is inspected before you open it. This is a known and accepted position for the
+            beta. Treat attachments with the same care you would an email from outside the firm."
         />
       )}
       <Table
@@ -250,10 +250,14 @@ export default function CompanyDetailPage() {
           {
             title: 'Scan',
             dataIndex: 'scanState',
-            width: 100,
+            width: 110,
             render: (s, row) => (
-              <Tooltip title={row.scanBackend === 'stub' ? 'Not scanned: no scanner is configured' : row.scanBackend}>
-                <Tag color={s === 'clean' ? '#3A5247' : s === 'infected' ? '#B54A32' : '#8C8C8C'}
+              <Tooltip
+                title={row.scanBackend === 'stub'
+                  ? 'Never inspected: no scanner was configured when this was uploaded'
+                  : row.scanBackend}
+              >
+                <Tag color={s === 'clean' ? '#3A5247' : s === 'infected' ? '#B54A32' : '#C9A84C'}
                      style={{ color: '#fff', borderColor: 'transparent' }}>
                   {s === 'clean' ? 'Clean' : s === 'infected' ? 'Quarantined' : 'Not scanned'}
                 </Tag>

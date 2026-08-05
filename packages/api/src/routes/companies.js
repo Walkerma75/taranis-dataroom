@@ -1127,21 +1127,21 @@ companyFilesRouter.get('/:fileId/history', async (req, res) => {
 /**
  * GET /company-files/:fileId/download
  *
- * Refused unless the scanner cleared the file. With the Phase 1a stub backend
- * NOTHING is ever cleared, so this endpoint returns 409 for every company
- * upload until a real scanner is wired. That is the intended behaviour and the
- * reason the stub is a recorded go-live blocker rather than a quiet default.
+ * An infected file is never served. An unscanned one is served while no scanner
+ * is configured, which is the accepted beta position (HANDOVER-C004 §3.1), and
+ * the response carries `X-Taranis-Scan-State: pending` so the caller cannot
+ * mistake it for a file that was checked. See `downloadDecision`.
  */
 companyFilesRouter.get('/:fileId/download', async (req, res) => {
   const file = await loadFileForTaranis(req, res, { write: false });
   if (!file) return;
 
-  const { isDownloadable, getScanner } = await import('../services/scanner.js');
-  if (!isDownloadable(file.scan_state)) {
+  const { downloadDecision, getScanner } = await import('../services/scanner.js');
+  const decision = downloadDecision(file.scan_state);
+
+  if (!decision.allowed) {
     return res.status(409).json({
-      error: file.scan_state === 'infected'
-        ? 'This file was quarantined by the security scan and cannot be downloaded.'
-        : 'This file has not yet been cleared by a security scan and cannot be downloaded.',
+      error: decision.reason,
       scanState: file.scan_state,
       scanner: getScanner().kind,
     });
@@ -1167,10 +1167,19 @@ companyFilesRouter.get('/:fileId/download', async (req, res) => {
       userId: req.user.sub,
       resource: 'company_file',
       resourceId: file.id,
-      detail: { companyId: file.company_id, filename: file.filename },
+      detail: {
+        companyId: file.company_id,
+        filename: file.filename,
+        // Recorded per download, so it is answerable later exactly which files
+        // were served without ever having been inspected.
+        scanState: file.scan_state,
+        unscanned: decision.unscanned,
+      },
       ip: req.ip,
     });
 
+    // Never let an unscanned file look like a checked one to any client.
+    res.setHeader('X-Taranis-Scan-State', file.scan_state);
     res.setHeader('Content-Type', file.content_type || 'application/octet-stream');
     res.setHeader(
       'Content-Disposition',

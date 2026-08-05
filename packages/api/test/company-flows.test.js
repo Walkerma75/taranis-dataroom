@@ -306,9 +306,15 @@ test('the company sees the reviewer note on a file, but never the internal note'
 // Downloads are gated on the scan verdict
 // ---------------------------------------------------------------------------
 
-test('a Taranis download is refused while the scanner has not cleared the file', async (t) => {
-  // With the Phase 1a stub backend nothing is ever cleared, so this is the
-  // behaviour every company upload gets until a real scanner is wired.
+test('an unscanned file is served under the stub, but the response says it was not scanned', async (t) => {
+  // The accepted beta position (HANDOVER-C004 §3.1). Refusing here would make
+  // the portal useless, because the stub never clears anything.
+  const { setStorage, MemoryStorage } = await import('../src/services/storage.js');
+  const store = new MemoryStorage();
+  await store.put('companies/a/i/f/x.pdf', { body: Buffer.from('%PDF-1.4 bytes') });
+  setStorage(store);
+  t.after(async () => (await import('../src/services/storage.js')).resetStorage());
+
   const pool = fakePool([
     ['FROM company_files f\n     JOIN companies c', [{
       id: FILE_1, company_id: COMPANY_A, upload_state: 'submitted',
@@ -319,12 +325,13 @@ test('a Taranis download is refused while the scanner has not cleared the file',
   const server = await startTestServer(MOUNTS, pool);
   t.after(() => server.close());
 
-  const res = await server.request(`/company-files/${FILE_1}/download`, { token: adminToken() });
+  const res = await fetch(`${server.base}/company-files/${FILE_1}/download`, {
+    headers: { Authorization: `Bearer ${adminToken()}` },
+  });
 
-  assert.equal(res.status, 409);
-  assert.equal(res.body.scanState, 'pending');
-  assert.equal(res.body.scanner, 'stub');
-  assert.match(res.body.error, /not yet been cleared/);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-taranis-scan-state'), 'pending');
+  assert.equal(await res.text(), '%PDF-1.4 bytes');
 });
 
 test('an infected file says so rather than pretending it is merely pending', async (t) => {
