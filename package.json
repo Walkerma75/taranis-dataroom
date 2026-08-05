@@ -10,6 +10,7 @@
     "dev": "docker compose up --build",
     "dev:api": "npm -w packages/api run dev",
     "dev:web": "npm -w packages/web run dev",
+    "test": "npm -w packages/api run test",
     "lint": "npm -w packages/api run lint && npm -w packages/web run lint"
   },
   "engines": {

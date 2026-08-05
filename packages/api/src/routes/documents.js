@@ -1,25 +1,38 @@
 /**
  * Document routes — upload, list, download.
- * Uses local filesystem in dev; will switch to S3 presigned URLs in production.
+ *
+ * Bytes live in the storage service (S3 in production, local disk in dev — see
+ * services/storage.js). Documents stream through this API on the task-role
+ * credential chain so the grant checks and audit writes below apply to every
+ * byte served. Nothing is written to container-local disk beyond a temp file
+ * during the upload itself.
  */
 import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
 import { pool } from '../db.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../services/audit.js';
+import { getStorage, StorageNotFoundError, STAGING_ROOT } from '../services/storage.js';
+import {
+  ALLOWED_EXTENSIONS,
+  storeUpload,
+  cleanupStaging,
+  contentDispositionFilename,
+} from '../services/document-files.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPLOAD_DIR = path.join(__dirname, '../../uploads');
-
-// Ensure upload directory exists
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
+// Uploads are staged in a per-request temp directory and removed once the bytes
+// are in the store. LibreOffice writes its PDF into the same directory.
+const stagingStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    try {
+      fs.mkdirSync(STAGING_ROOT, { recursive: true });
+      cb(null, fs.mkdtempSync(path.join(STAGING_ROOT, 'upload-')));
+    } catch (err) {
+      cb(err);
+    }
+  },
   filename: (_req, file, cb) => {
     const unique = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
     cb(null, `${unique}${path.extname(file.originalname)}`);
@@ -27,12 +40,11 @@ const storage = multer.diskStorage({
 });
 
 const upload = multer({
-  storage,
+  storage: stagingStorage,
   limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
   fileFilter: (_req, file, cb) => {
-    const allowed = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.png', '.jpg', '.jpeg'];
     const ext = path.extname(file.originalname).toLowerCase();
-    if (allowed.includes(ext)) cb(null, true);
+    if (ALLOWED_EXTENSIONS.includes(ext)) cb(null, true);
     else cb(new Error(`File type ${ext} not allowed`));
   },
 });
@@ -130,52 +142,22 @@ router.post('/', upload.single('file'), async (req, res) => {
   // Check capability
   const userCaps = await getUserCapabilities(req.user.sub);
   if (req.user.role !== 'admin' && !userCaps.canUploadDocuments) {
+    if (req.file) cleanupStaging(req.file.destination);
     return res.status(403).json({ error: 'You do not have permission to upload documents' });
   }
   if (!req.file) return res.status(400).json({ error: 'File required' });
 
   const { fundId, categoryId, title, description } = req.body;
   if (!fundId || !categoryId || !title) {
+    cleanupStaging(req.file.destination);
     return res.status(400).json({ error: 'fundId, categoryId and title are required' });
   }
 
   try {
-    // Auto-convert Word documents to PDF
-    let finalFilename = req.file.filename;
-    let finalOriginalName = req.file.originalname;
-    let finalSize = req.file.size;
-    let finalMimeType = req.file.mimetype;
-    let converted = false;
-
-    const ext = path.extname(req.file.originalname).toLowerCase();
-    if (['.doc', '.docx'].includes(ext)) {
-      try {
-        const inputPath = path.join(UPLOAD_DIR, req.file.filename);
-        execSync(`libreoffice --headless --convert-to pdf --outdir "${UPLOAD_DIR}" "${inputPath}"`, {
-          timeout: 60000, // 60 second timeout
-        });
-
-        // LibreOffice outputs with same base name but .pdf extension
-        const baseName = path.basename(req.file.filename, path.extname(req.file.filename));
-        const pdfFilename = `${baseName}.pdf`;
-        const pdfPath = path.join(UPLOAD_DIR, pdfFilename);
-
-        if (fs.existsSync(pdfPath)) {
-          finalFilename = pdfFilename;
-          finalOriginalName = req.file.originalname.replace(/\.(doc|docx)$/i, '.pdf');
-          finalSize = fs.statSync(pdfPath).size;
-          finalMimeType = 'application/pdf';
-          converted = true;
-
-          // Remove the original Word file
-          fs.unlinkSync(inputPath);
-          console.log(`[documents] Converted ${req.file.originalname} to PDF`);
-        }
-      } catch (convErr) {
-        console.warn('[documents] PDF conversion failed, keeping original:', convErr.message);
-        // Fall through — keep the original Word file
-      }
-    }
+    // Convert Word to PDF if needed, put the bytes in the store, clear the
+    // staging directory. `stored.key` is what goes in `documents.file_path`.
+    const storage = await getStorage();
+    const stored = await storeUpload({ file: req.file, fundId, storage });
 
     const { rows: [doc] } = await pool.query(
       `INSERT INTO documents (fund_id, category_id, title, description, file_name, file_path, file_size, mime_type, uploaded_by)
@@ -183,7 +165,7 @@ router.post('/', upload.single('file'), async (req, res) => {
        RETURNING *`,
       [
         fundId, categoryId, title, description || null,
-        finalOriginalName, finalFilename, finalSize, finalMimeType,
+        stored.fileName, stored.key, stored.size, stored.mimeType,
         req.user.sub,
       ]
     );
@@ -197,7 +179,8 @@ router.post('/', upload.single('file'), async (req, res) => {
         title, fundId, categoryId,
         fileName: req.file.originalname,
         size: req.file.size,
-        ...(converted ? { convertedToPdf: true, originalFormat: ext } : {}),
+        storage: storage.kind,
+        ...(stored.converted ? { convertedToPdf: true, originalFormat: stored.originalFormat } : {}),
       },
       ip: req.ip,
     });
@@ -205,6 +188,7 @@ router.post('/', upload.single('file'), async (req, res) => {
     res.status(201).json(doc);
   } catch (err) {
     console.error('[documents] Upload error:', err);
+    cleanupStaging(req.file.destination);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -266,16 +250,33 @@ router.get('/:id/download', async (req, res) => {
       ip: req.ip,
     });
 
-    const filePath = path.join(UPLOAD_DIR, doc.file_path);
-
-    if (isInline) {
-      // Serve inline for preview (PDF/images in iframe/img tags)
-      res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `inline; filename="${doc.file_name}"`);
-      res.sendFile(filePath);
-    } else {
-      res.download(filePath, doc.file_name);
+    // Stream the bytes out of the store. The API holds the credential, so the
+    // grant checks above still gate every byte served.
+    const storage = await getStorage();
+    let object;
+    try {
+      object = await storage.get(doc.file_path);
+    } catch (err) {
+      if (err instanceof StorageNotFoundError) {
+        console.error(`[documents] Missing object for document ${doc.id}: ${doc.file_path}`);
+        return res.status(404).json({ error: 'Document file is no longer available' });
+      }
+      throw err;
     }
+
+    const filename = contentDispositionFilename(doc.file_name);
+    res.setHeader('Content-Type', doc.mime_type || object.contentType || 'application/octet-stream');
+    res.setHeader(
+      'Content-Disposition',
+      `${isInline ? 'inline' : 'attachment'}; filename="${filename}"`
+    );
+    if (object.contentLength != null) res.setHeader('Content-Length', object.contentLength);
+
+    object.body.on('error', (streamErr) => {
+      console.error('[documents] Stream error:', streamErr.message);
+      res.destroy(streamErr);
+    });
+    object.body.pipe(res);
   } catch (err) {
     console.error('[documents] Download error:', err);
     res.status(500).json({ error: 'Internal server error' });

@@ -12,7 +12,8 @@
 - **Monorepo:** npm workspaces — `packages/api`, `packages/web`.
 - **DB:** PostgreSQL 16 on RDS (single-AZ db.t3.micro, eu-west-2b today). Append-only `audit_log` with UPDATE/DELETE blocked at trigger level. 8-year retention is DFSA-aligned — never prune, never drop, never alter those triggers.
 - **Containers:** Docker Compose locally; ECS Fargate in prod (cluster `taranis-dataroom`, service `taranis-dataroom-service`, task-definition family `taranis-dataroom`).
-- **Storage:** documents in S3 bucket `taranis-dataroom-documents-prod` (bytes byte-for-byte; metadata in Postgres).
+- **Storage:** documents in S3 bucket `taranis-dataroom-documents-prod` (bytes byte-for-byte; metadata in Postgres). Wired in Phase 0, 2026-08-05 — before that, uploads went to container-local disk and were destroyed on every deploy. `packages/api/src/services/storage.js` is the injectable interface; `S3_BUCKET` and `AWS_REGION` come from the ECS task definition, not from the repo.
+- **Tests:** Node 20's built-in `node:test` / `node:assert`. `npm test` at the root, or `npm -w packages/api run test`. No test framework dependency. S3 is exercised against an in-memory double, never against a real bucket.
 
 ## AWS layout — names only, no secret values
 
@@ -72,7 +73,9 @@ Overview, Private Placement Memorandum, Legal Documents, Financials, Technical, 
 
 - **8-year `audit_log` retention is DFSA-aligned.** The table is append-only. Never prune, never alter the triggers, never drop. The triggers live in migration 004.
 - **RDS password rotation atomic sequence.** The canonical ordering lives in `MIGRATION-INVENTORY.md` Appendix B (corrected 2026-04-22 after executing in prod). Key point: Secrets Manager must initially hold the CURRENT RDS password before you roll the new task-def, then you update SM to the new value AND rotate RDS AND force-new-deployment in a single ~10-min freeze window. Out-of-order is a production outage.
-- **"CloudFront OAC presigned URLs, 5-minute TTL" is a spec plan, not the implementation.** Today documents stream through the ECS API via the task role, not through CloudFront. If a user reports a broken PDF link, it's usually an auth-token timeout or an S3 key mismatch, not OAC.
+- **"CloudFront OAC presigned URLs, 5-minute TTL" is a spec plan, not the implementation.** Today documents stream through the ECS API via the task role, not through CloudFront. If a user reports a broken PDF link, it's usually an auth-token timeout or an S3 key mismatch, not OAC. This was deliberately kept at the Phase 0 S3 cutover: streaming through the API preserves the grant checks and audit writes on every byte served.
+- **No `S3_BUCKET` means local disk, silently but loudly.** With `S3_BUCKET` unset the API falls back to `packages/api/uploads` so `docker compose up` still works, logs `[storage] Documents backed by local disk …` at startup, and reports `"storage": "local"` on `/health`. If a production task ever shows `local` there, uploads are being written to ephemeral storage again.
+- **Every document row created before 2026-08-05 is `archived`.** Migration `009_archive_pre_s3_documents.sql` did this at the S3 cutover: those rows' files were lost to ephemeral container storage long before, so leaving them `active` would have advertised documents that 404 on click. Rows were kept, not deleted, so `audit_log` entries still resolve. `s3_cutover_archived_documents` records exactly which rows were changed, and reversing is one UPDATE joined to it.
 - **`deploy.bat` uses `:latest` tags; CI uses `:latest` + `:${{ github.sha }}`.** Switching deploy.bat to unique tags is TASKS.md #15.
 - **Frontend `VITE_API_URL` defaults to relative `/api`.** Any build without this env var set still produces a working bundle (nginx proxies). An earlier defaulting to `http://localhost:4000` caused a latent bug that only surfaced when cached JWTs were invalidated — fixed 2026-04-22. See `C:\Users\mark\Claude Cowork\Other\Admin\WORKFLOW.md` → "Latent bugs exposed during Tier 3 migrations" if planning a rotation elsewhere.
 - **pg.Pool has explicit `ssl:` config in `packages/api/src/db.js`.** Gated on `PGSSLMODE`. Encrypt-without-verify (`rejectUnauthorized: false`) until the RDS CA bundle is shipped with the image (TASKS.md #13 paired with `rds.force_ssl=1`).
@@ -95,4 +98,6 @@ Overview, Private Placement Memorandum, Legal Documents, Financials, Technical, 
 
 ## Last updated
 
-22 April 2026 (Tier 3 follow-up execution: TASKS.md #4/#5/#6 closed, JWT rotation folded in, three latent bugs fixed in code and documented as pre-flight checks in `C:\Users\mark\Claude Cowork\Other\Admin\WORKFLOW.md`).
+5 August 2026 (DD Portal Phase 0: document storage moved to S3, first test harness added, pre-cutover document rows archived by migration 009 — see `Code/Handover/HANDOVER-C003-*.md`).
+
+Previously 22 April 2026 (Tier 3 follow-up execution: TASKS.md #4/#5/#6 closed, JWT rotation folded in, three latent bugs fixed in code and documented as pre-flight checks in `C:\Users\mark\Claude Cowork\Other\Admin\WORKFLOW.md`).
