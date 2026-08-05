@@ -13,7 +13,8 @@
 - **DB:** PostgreSQL 16 on RDS (single-AZ db.t3.micro, eu-west-2b today). Append-only `audit_log` with UPDATE/DELETE blocked at trigger level. 8-year retention is DFSA-aligned — never prune, never drop, never alter those triggers.
 - **Containers:** Docker Compose locally; ECS Fargate in prod (cluster `taranis-dataroom`, service `taranis-dataroom-service`, task-definition family `taranis-dataroom`).
 - **Storage:** documents in S3 bucket `taranis-dataroom-documents-prod` (bytes byte-for-byte; metadata in Postgres). Wired in Phase 0, 2026-08-05 — before that, uploads went to container-local disk and were destroyed on every deploy. `packages/api/src/services/storage.js` is the injectable interface; `S3_BUCKET` and `AWS_REGION` come from the ECS task definition, not from the repo.
-- **Tests:** Node 20's built-in `node:test` / `node:assert`. `npm test` at the root, or `npm -w packages/api run test`. No test framework dependency. S3 is exercised against an in-memory double, never against a real bucket.
+- **Tests:** Node 20's built-in `node:test` / `node:assert`. `npm test` at the root, or `npm -w packages/api run test`. No test framework dependency. S3 is exercised against an in-memory double, never against a real bucket; the database is exercised against a fake pool injected via `setPool()` in `packages/api/src/db.js`, so the whole suite runs with no container and no network.
+- **Virus scanning:** `packages/api/src/services/scanner.js`, same injectable shape as storage. **The backend that ships is a STUB that scans nothing and never returns `clean`**, so every company upload stays quarantined from Taranis-side download. See the first entry in `MIGRATION-INVENTORY.md` §12 — it is a recorded go-live blocker, not a default anyone should assume away.
 
 ## AWS layout — names only, no secret values
 
@@ -46,9 +47,15 @@ See `MIGRATION-INVENTORY.md` at the repo root for the full state-of-the-world.
 - **Never put secret values in committed files. Names and locations only.**
 - After the 21 April 2026 history scrub, any reference to specific prior credential values (AWS key `AKIA…OP7D`, the prior RDS master password, the `Admin123!` seed default) lives only in `docs/incident/` with truncated identifiers.
 
-## Five user roles
+## User roles
 
-Admin, Investor, Advisor, Viewer (Consultant was merged into Advisor in migration 007). Permissions are three-dimensional: user × fund × category, with per-document overrides and per-role capability toggles.
+**Fund side:** Admin, Investor, Advisor, Viewer (Consultant was merged into Advisor in migration 007). Permissions are three-dimensional: user × fund × category, with per-document overrides and per-role capability toggles.
+
+**Company side:** `company` (migration 010) — a due diligence counterparty. Deliberately outside the fund permission matrix entirely: a company user holds no `grants`, no `document_overrides` and no `permission_templates`, and every fund-side router rejects the role explicitly via `rejectCompanyRole`. Their capability comes from the `company_users` membership record (`company_admin` / `company_contributor` / `company_viewer`), not from the global role.
+
+Their JWT carries a `companyId` claim, and **every `/api/company/*` route resolves its scope from that claim and never from a client-supplied id.** Membership and company status are re-read from the database on each request, so a deactivated user or a suspended company loses access at once rather than at token expiry. `packages/api/test/company-isolation.test.js` is the proof and should be extended, never weakened, whenever a company-side route is added.
+
+**MFA is mandatory for role `company` only.** Other roles keep today's opt-in behaviour, deliberately: forcing enrolment on live investor and advisor users mid-release would lock people out of a portal they already use (HANDOVER-C003 §5.5). A company user who has not enrolled gets an `mfaPending` token that reaches `/auth/mfa/setup` and `/auth/mfa/verify` and nothing else. `requireAuth` rejects that token by default, so no new route can forget the check; the two enrolment endpoints opt in with `requireAuthForMfaEnrolment`.
 
 ## Seven document categories (post-migration 006)
 
@@ -76,6 +83,10 @@ Overview, Private Placement Memorandum, Legal Documents, Financials, Technical, 
 - **"CloudFront OAC presigned URLs, 5-minute TTL" is a spec plan, not the implementation.** Today documents stream through the ECS API via the task role, not through CloudFront. If a user reports a broken PDF link, it's usually an auth-token timeout or an S3 key mismatch, not OAC. This was deliberately kept at the Phase 0 S3 cutover: streaming through the API preserves the grant checks and audit writes on every byte served.
 - **No `S3_BUCKET` means local disk, silently but loudly.** With `S3_BUCKET` unset the API falls back to `packages/api/uploads` so `docker compose up` still works, logs `[storage] Documents backed by local disk …` at startup, and reports `"storage": "local"` on `/health`. If a production task ever shows `local` there, uploads are being written to ephemeral storage again.
 - **Every document row created before 2026-08-05 is `archived`.** Migration `009_archive_pre_s3_documents.sql` did this at the S3 cutover: those rows' files were lost to ephemeral container storage long before, so leaving them `active` would have advertised documents that 404 on click. Rows were kept, not deleted, so `audit_log` entries still resolve. `s3_cutover_archived_documents` records exactly which rows were changed, and reversing is one UPDATE joined to it.
+- **A company cannot be activated without BOTH gates.** `nda_executed_at` and `iems_screened_at` must both be recorded before `POST /companies/:id/activate` will do anything. The rule lives in the service layer, not a DB constraint, so the admin gets a readable refusal. The first real cohort exercises it: IMALIA holds an executed NDA but has no IEMS screen on record and must stay unactivatable. Activation is also what seeds the checklist, from the newest IRL template for the fund; seeding is idempotent, so re-activating adds nothing.
+- **IRL `ref` values are permanent identifiers.** '1.1' style, unique per template and per company, quoted back by companies in correspondence and used in the PRE-FILLED and GAPS working files. **Never renumber them.** Display order lives in `sort_order` so an insertion never forces a renumber. The Biotech KSA master is a committed artefact at `packages/api/src/db/seeds/biotech-ksa-irl-v1.json` (146 items, 14 sections, priorities 42 high / 43 medium / 61 standard), regenerated from the fund-paperwork spreadsheet by `tools/build-irl-seed.mjs` and imported with `npm -w packages/api run seed:irl -- --fund biotech-ksa`. The JSON is committed because the API container cannot read the workstation path the spreadsheet lives on, and because it lets the tests assert those counts hermetically.
+- **`company_irl_items.internal_note` must never reach a company.** It is stripped by `companySafeItem()` on every company-facing response and is not part of the shape the Excel exporters accept, so the GAPS sheet cannot carry one even if someone forgets to exclude it at the query. Both are asserted in the tests.
+- **No email anywhere in Phase 1a.** Invitations issue a link for an admin to send by hand, and the Review Queue page is the substitute for upload notifications. SES is Phase 1b and is gated on AWS production access.
 - **`deploy.bat` uses `:latest` tags; CI uses `:latest` + `:${{ github.sha }}`.** Switching deploy.bat to unique tags is TASKS.md #15.
 - **Frontend `VITE_API_URL` defaults to relative `/api`.** Any build without this env var set still produces a working bundle (nginx proxies). An earlier defaulting to `http://localhost:4000` caused a latent bug that only surfaced when cached JWTs were invalidated — fixed 2026-04-22. See `C:\Users\mark\Claude Cowork\Other\Admin\WORKFLOW.md` → "Latent bugs exposed during Tier 3 migrations" if planning a rotation elsewhere.
 - **pg.Pool has explicit `ssl:` config in `packages/api/src/db.js`.** Gated on `PGSSLMODE`. Encrypt-without-verify (`rejectUnauthorized: false`) until the RDS CA bundle is shipped with the image (TASKS.md #13 paired with `rds.force_ssl=1`).
@@ -98,6 +109,8 @@ Overview, Private Placement Memorandum, Legal Documents, Financials, Technical, 
 
 ## Last updated
 
-5 August 2026 (DD Portal Phase 0: document storage moved to S3, first test harness added, pre-cutover document rows archived by migration 009 — see `Code/Handover/HANDOVER-C003-*.md`).
+6 August 2026 (DD Portal Phase 1a: company role and isolation middleware, migrations 010 to 013, company portal and admin routes, the seven new screens, mandatory MFA for the company role, the Biotech IRL seed importer, the PRE-FILLED and GAPS exports, and virus scanning behind a stubbed interface — see `Code/Handover/HANDOVER-CW004-*.md`).
+
+Previously 5 August 2026 (DD Portal Phase 0: document storage moved to S3, first test harness added, pre-cutover document rows archived by migration 009 — see `Code/Handover/HANDOVER-C003-*.md`).
 
 Previously 22 April 2026 (Tier 3 follow-up execution: TASKS.md #4/#5/#6 closed, JWT rotation folded in, three latent bugs fixed in code and documented as pre-flight checks in `C:\Users\mark\Claude Cowork\Other\Admin\WORKFLOW.md`).

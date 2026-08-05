@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Card, Typography, Button, Input, Steps, Alert, Space, Checkbox, message } from 'antd';
 import { SafetyCertificateOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../../api/client.js';
+import { api, setTokens } from '../../api/client.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 
 const { Title, Text, Paragraph } = Typography;
@@ -43,9 +43,18 @@ export default function MfaSetupPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setRecoveryCodes(data.recoveryCodes);
-      setUser({ ...user, mfaEnabled: true });
+
+      // Enrolment forced at login (company role) hands back a full session
+      // here, so the user goes straight on rather than signing in twice.
+      if (data.accessToken) {
+        setTokens(data.accessToken, data.refreshToken);
+        setUser({ ...data.user, mfaEnabled: true });
+      } else {
+        setUser({ ...user, mfaEnabled: true });
+      }
+
       setStep(2);
-      message.success('MFA enabled successfully');
+      message.success('Two-factor authentication is now enabled');
     } catch (err) {
       setError(err.message);
     }
@@ -82,11 +91,22 @@ export default function MfaSetupPage() {
 
       {error && <Alert message={error} type="error" showIcon style={{ marginBottom: 16 }} />}
 
+      {user?.mfaEnrolmentRequired && (
+        <Alert
+          message="Two-factor authentication is required for this account"
+          description="Company workspaces hold confidential material, so you cannot continue until
+            you have set this up. It takes about a minute."
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
       {step === 0 && (
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <Paragraph>
-            Protect your account with a TOTP authenticator app (e.g. Google Authenticator,
-            Authy, 1Password). You will need to enter a code from the app each time you sign in.
+            Protect your account with a TOTP authenticator app (for example Google Authenticator,
+            Authy or 1Password). You will need to enter a code from the app each time you sign in.
           </Paragraph>
           <Button type="primary" onClick={startSetup} loading={loading} block>
             Begin Setup
@@ -141,9 +161,9 @@ export default function MfaSetupPage() {
             type="primary"
             block
             disabled={!codesConfirmed}
-            onClick={() => navigate('/dashboard')}
+            onClick={() => navigate(user?.role === 'company' ? '/company' : '/dashboard')}
           >
-            Close
+            Continue
           </Button>
         </Space>
       )}

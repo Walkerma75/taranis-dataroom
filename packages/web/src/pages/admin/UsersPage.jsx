@@ -17,6 +17,10 @@ const roleColours = {
   investor: 'blue',
   advisor: 'purple',
   viewer: 'default',
+  // Due diligence counterparty users. They hold no grants and reach no fund
+  // material, so they are listed here for visibility and for the role filter,
+  // not so that fund permissions can be assigned to them.
+  company: 'green',
 };
 
 const statusColours = {

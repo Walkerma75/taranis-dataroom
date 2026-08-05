@@ -1,0 +1,101 @@
+/**
+ * Shared display rules for the DD portal screens.
+ *
+ * Chip colours are fixed by the code brief §7.1 and are used on both sides, so
+ * a reviewer and a company user are looking at the same colour for the same
+ * state. UK English throughout, and no em dashes in anything user-facing.
+ */
+
+export const STATE_LABELS = {
+  outstanding: 'Outstanding',
+  partially_held: 'Partially held',
+  held: 'Held',
+  received: 'Received',
+  in_review: 'In review',
+  attention_needed: 'Attention needed',
+  completed: 'Completed',
+  not_applicable: 'Not applicable',
+};
+
+export const STATE_COLOURS = {
+  outstanding: '#BFBFBF',
+  partially_held: '#D8B44A',
+  held: '#3A5247',
+  received: '#8C8C8C',
+  in_review: '#C9A84C',
+  attention_needed: '#B54A32',
+  completed: '#3A5247',
+  not_applicable: '#D9D9D9',
+};
+
+export const PRIORITY_LABELS = {
+  high: 'High',
+  medium: 'Medium',
+  standard: 'Standard',
+};
+
+export const PRIORITY_COLOURS = {
+  high: '#B54A32',
+  medium: '#C9A84C',
+  standard: '#8C8C8C',
+};
+
+export const COMPANY_ROLE_LABELS = {
+  company_admin: 'Administrator',
+  company_contributor: 'Contributor',
+  company_viewer: 'Viewer',
+};
+
+export const COMPANY_STATUS_LABELS = {
+  pending: 'Pending',
+  active: 'Active',
+  suspended: 'Suspended',
+  offboarded: 'Offboarded',
+};
+
+/** Accepted upload types, matching the server-side allow-list. */
+export const ACCEPTED_UPLOAD_TYPES =
+  '.pdf,.docx,.xlsx,.pptx,.csv,.txt,.png,.jpg,.jpeg,.zip';
+
+export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+/**
+ * Format a timestamp in UTC, and mean it.
+ *
+ * Receipts and submission times are quoted back in correspondence between two
+ * parties in different time zones, so they are shown in UTC and labelled. This
+ * builds the string from the UTC parts rather than formatting a local date and
+ * calling it UTC, which is the mistake that makes a receipt an hour wrong for
+ * half the year.
+ */
+export function formatUtc(value, { long = false } = {}) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  const month = long ? MONTHS[d.getUTCMonth()] : MONTHS[d.getUTCMonth()].slice(0, 3);
+  return `${d.getUTCDate()} ${month} ${d.getUTCFullYear()} `
+       + `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
+}
+
+export function formatBytes(bytes) {
+  if (bytes == null) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Group checklist items by their section, preserving sort order. */
+export function groupBySection(items = []) {
+  const sections = new Map();
+  for (const item of items) {
+    if (!sections.has(item.section)) sections.set(item.section, []);
+    sections.get(item.section).push(item);
+  }
+  return [...sections.entries()].map(([section, sectionItems]) => ({ section, items: sectionItems }));
+}

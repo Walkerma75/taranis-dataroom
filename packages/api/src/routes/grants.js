@@ -3,7 +3,7 @@
  */
 import { Router } from 'express';
 import { pool } from '../db.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, rejectCompanyRole } from '../middleware/auth.js';
 import { logAudit } from '../services/audit.js';
 
 // Helper: load user capabilities from DB
@@ -17,7 +17,7 @@ async function getUserCapabilities(userId) {
 
 const router = Router();
 // Grants management requires admin role or canManageUsers capability
-router.use(requireAuth, requireRole('admin'));
+router.use(requireAuth, rejectCompanyRole, requireRole('admin'));
 
 // GET /grants?userId=...
 router.get('/', async (req, res) => {

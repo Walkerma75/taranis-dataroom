@@ -3,11 +3,11 @@
  */
 import { Router } from 'express';
 import { pool } from '../db.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, rejectCompanyRole } from '../middleware/auth.js';
 import { logAudit } from '../services/audit.js';
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, rejectCompanyRole);
 
 // GET /notices — admins see all; others see only notices sent to them
 router.get('/', async (req, res) => {

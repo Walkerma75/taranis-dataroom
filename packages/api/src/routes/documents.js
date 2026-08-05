@@ -12,7 +12,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { pool } from '../db.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, rejectCompanyRole } from '../middleware/auth.js';
 import { logAudit } from '../services/audit.js';
 import { getStorage, StorageNotFoundError, STAGING_ROOT } from '../services/storage.js';
 import {
@@ -59,7 +59,7 @@ async function getUserCapabilities(userId) {
 }
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, rejectCompanyRole);
 
 // GET /documents?fundId=...&categoryId=...
 router.get('/', async (req, res) => {
@@ -211,6 +211,19 @@ router.get('/:id/download', async (req, res) => {
     req.user = verifyAccessToken(header.slice(7));
   } catch {
     return res.status(401).json({ error: 'Invalid token' });
+  }
+
+  // This route re-implements auth rather than going through requireAuth, so the
+  // fund-side guard and the MFA-pending check have to be repeated here. Without
+  // this, ?token= would be a way round both.
+  if (req.user.mfaPending) {
+    return res.status(403).json({
+      error: 'Two-factor authentication must be set up before you can continue.',
+      mfaEnrolmentRequired: true,
+    });
+  }
+  if (req.user.role === 'company') {
+    return res.status(403).json({ error: 'Insufficient permissions' });
   }
 
   try {

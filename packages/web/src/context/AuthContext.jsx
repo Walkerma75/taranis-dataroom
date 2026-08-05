@@ -51,6 +51,15 @@ export function AuthProvider({ children }) {
       return { mfaRequired: true };
     }
 
+    // Mandatory MFA, company role only. The token returned here reaches the
+    // enrolment endpoints and nothing else, so the app holds it, marks the
+    // session as pending and shows enrolment instead of the portal.
+    if (data.mfaEnrolmentRequired) {
+      setTokens(data.accessToken, null);
+      setUser({ ...data.user, mfaEnrolmentRequired: true });
+      return { user: data.user, mfaEnrolmentRequired: true };
+    }
+
     setTokens(data.accessToken, data.refreshToken);
     setUser(data.user);
     return { user: data.user };

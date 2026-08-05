@@ -22,9 +22,35 @@ import {
   hashToken,
 } from '../services/auth.js';
 import { logAudit } from '../services/audit.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireAuthForMfaEnrolment, requireRole } from '../middleware/auth.js';
+import { loadCompanyMembership } from '../services/companies.js';
 
 const router = Router();
+
+/**
+ * MFA is MANDATORY for role `company` and unchanged (opt-in) for every other
+ * role. This is HANDOVER-C003 §5.5 and it is deliberate: forcing enrolment on
+ * live investor, advisor and viewer users mid-release would lock people out of
+ * a portal they are already using. Company users are all new, so there is no
+ * one to lock out.
+ */
+export function mfaIsMandatoryFor(role) {
+  return role === 'company';
+}
+
+/**
+ * Build the claims a token carries for this user. For a company user that
+ * means the `companyId` every /api/company/* route scopes itself from.
+ */
+async function claimsFor(user) {
+  if (user.role !== 'company') return {};
+  const membership = await loadCompanyMembership(user.id);
+  if (!membership) return {};
+  return {
+    companyId: membership.company_id,
+    companyRole: membership.company_role,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // POST /auth/login
@@ -85,7 +111,38 @@ router.post('/login', async (req, res) => {
     // Success — issue tokens
     await clearFailedLogins(user.id);
 
-    const accessToken = signAccessToken(user);
+    // Mandatory MFA, company role only. A company user who has not enrolled
+    // gets a token that reaches the two MFA enrolment endpoints and nothing
+    // else, so they can complete enrolment in this same session but cannot see
+    // a single checklist item until they have.
+    if (mfaIsMandatoryFor(user.role) && !user.totp_verified) {
+      const enrolmentToken = signAccessToken(user, { mfaPending: true });
+      await logAudit({
+        action: 'login.success',
+        userId: user.id,
+        detail: { mfaEnrolmentRequired: true },
+        ip,
+        userAgent: ua,
+      });
+      // No refresh token: enrolment is a one-shot flow inside the 15-minute
+      // access token, and an mfaPending session must not be extendable.
+      return res.json({
+        accessToken: enrolmentToken,
+        mfaEnrolmentRequired: true,
+        message: 'Two-factor authentication must be set up before you can continue.',
+        user: {
+          id: user.id,
+          email: user.email,
+          displayName: user.display_name,
+          role: user.role,
+          mfaEnabled: false,
+          capabilities: user.capabilities || {},
+        },
+      });
+    }
+
+    const claims = await claimsFor(user);
+    const accessToken = signAccessToken(user, claims);
     const refreshToken = generateRefreshToken();
     await storeRefreshToken(user.id, refreshToken);
 
@@ -101,6 +158,9 @@ router.post('/login', async (req, res) => {
         role: user.role,
         mfaEnabled: !!user.totp_verified,
         capabilities: user.capabilities || {},
+        ...(claims.companyId
+          ? { companyId: claims.companyId, companyRole: claims.companyRole }
+          : {}),
       },
     });
   } catch (err) {
@@ -126,12 +186,16 @@ router.post('/refresh', async (req, res) => {
     const newRefresh = generateRefreshToken();
     await storeRefreshToken(record.uid, newRefresh);
 
-    const accessToken = signAccessToken({
+    // Claims are rebuilt from the database on every refresh, not copied from
+    // the old token. A company user moved, demoted or removed picks that up
+    // within one refresh cycle rather than never.
+    const user = {
       id: record.uid,
       email: record.email,
       role: record.role,
       display_name: record.display_name,
-    });
+    };
+    const accessToken = signAccessToken(user, await claimsFor(user));
 
     res.json({ accessToken, refreshToken: newRefresh });
   } catch (err) {
@@ -168,6 +232,10 @@ router.get('/me', requireAuth, async (req, res) => {
     );
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    // The web client branches its whole shell on this: role 'company' lands in
+    // the Company Portal and never renders fund navigation.
+    const membership = user.role === 'company' ? await loadCompanyMembership(user.id) : null;
+
     res.json({
       id: user.id,
       email: user.email,
@@ -177,6 +245,14 @@ router.get('/me', requireAuth, async (req, res) => {
       mfaEnabled: user.mfa_enabled,
       capabilities: user.capabilities || {},
       createdAt: user.created_at,
+      ...(membership
+        ? {
+            companyId: membership.company_id,
+            companyName: membership.legal_name,
+            companyRole: membership.company_role,
+            companyStatus: membership.company_status,
+          }
+        : {}),
     });
   } catch (err) {
     res.status(500).json({ error: 'Internal server error' });
@@ -186,7 +262,9 @@ router.get('/me', requireAuth, async (req, res) => {
 // ---------------------------------------------------------------------------
 // POST /auth/mfa/setup — generate TOTP secret + QR code
 // ---------------------------------------------------------------------------
-router.post('/mfa/setup', requireAuth, async (req, res) => {
+// Uses requireAuthForMfaEnrolment so a company user holding an `mfaPending`
+// token can complete enrolment. Every other route rejects that token.
+router.post('/mfa/setup', requireAuthForMfaEnrolment, async (req, res) => {
   try {
     const secret = authenticator.generateSecret();
     const otpauth = authenticator.keyuri(req.user.email, 'Taranis Data Room', secret);
@@ -210,7 +288,7 @@ router.post('/mfa/setup', requireAuth, async (req, res) => {
 // ---------------------------------------------------------------------------
 // POST /auth/mfa/verify — confirm TOTP code to enable MFA
 // ---------------------------------------------------------------------------
-router.post('/mfa/verify', requireAuth, async (req, res) => {
+router.post('/mfa/verify', requireAuthForMfaEnrolment, async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ error: 'TOTP code required' });
 
@@ -242,6 +320,39 @@ router.post('/mfa/verify', requireAuth, async (req, res) => {
 
     await logAudit({ action: 'mfa.enabled', userId: req.user.sub, ip: req.ip });
 
+    // If this was an enrolment forced at login (company role), hand back a full
+    // session now rather than making the user log in a second time. Their token
+    // up to this point could reach nothing but these two endpoints.
+    if (req.user.mfaPending) {
+      const { rows: [user] } = await pool.query(
+        `SELECT id, email, display_name, role, COALESCE(capabilities, '{}') AS capabilities
+         FROM users WHERE id = $1`,
+        [req.user.sub]
+      );
+      const claims = await claimsFor(user);
+      const accessToken = signAccessToken(user, claims);
+      const refreshToken = generateRefreshToken();
+      await storeRefreshToken(user.id, refreshToken);
+
+      return res.json({
+        message: 'MFA enabled',
+        recoveryCodes,
+        accessToken,
+        refreshToken,
+        user: {
+          id: user.id,
+          email: user.email,
+          displayName: user.display_name,
+          role: user.role,
+          mfaEnabled: true,
+          capabilities: user.capabilities || {},
+          ...(claims.companyId
+            ? { companyId: claims.companyId, companyRole: claims.companyRole }
+            : {}),
+        },
+      });
+    }
+
     res.json({ message: 'MFA enabled', recoveryCodes });
   } catch (err) {
     console.error('[auth] MFA verify error:', err);
@@ -258,6 +369,10 @@ router.post('/invite', requireAuth, requireRole('admin'), async (req, res) => {
     return res.status(400).json({ error: 'Email and display name are required' });
   }
 
+  // 'company' is deliberately absent. A company user without a company_users
+  // membership row would hold a role that grants nothing and scopes to nothing,
+  // so company invites go through POST /companies/:id/users, which creates the
+  // user and the membership together.
   const validRoles = ['investor', 'advisor', 'viewer', 'admin'];
   if (role && !validRoles.includes(role)) {
     return res.status(400).json({ error: 'Invalid role' });
