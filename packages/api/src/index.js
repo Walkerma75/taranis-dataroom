@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import argon2 from 'argon2';
 import { pool, testConnection } from './db.js';
+import { getStorage } from './services/storage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -46,10 +47,13 @@ const authLimiter = rateLimit({
 app.get('/health', async (_req, res) => {
   try {
     const result = await pool.query('SELECT NOW() AS server_time');
+    const storage = await getStorage();
     res.json({
       status: 'ok',
       service: 'taranis-dataroom-api',
       database: 'connected',
+      // Backend kind only — never the bucket name, this endpoint is public.
+      storage: storage.kind,
       serverTime: result.rows[0].server_time,
     });
   } catch (err) {
@@ -201,6 +205,11 @@ async function autoSeed() {
     await testConnection();
     await autoMigrate();
     await autoSeed();
+
+    // Say which store documents will be written to, so a misconfigured
+    // deployment is obvious in the task logs rather than at first upload.
+    const storage = await getStorage();
+    console.log(`[storage] Documents backed by ${storage.describe()}`);
   } catch (err) {
     console.error('[startup] Failed to initialise database:', err.message);
     process.exit(1);
