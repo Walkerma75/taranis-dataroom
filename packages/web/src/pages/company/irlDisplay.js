@@ -69,6 +69,37 @@ export function inviteBlockedReason(status) {
   return 'Activate the company first. Its users see nothing until then.';
 }
 
+/**
+ * Nomination display rules.
+ *
+ * A nomination is now shown in two places: inside the company, on
+ * CompanyDetailPage's Users tab, and across all companies on the admin Users
+ * page. The predicate, the label, the colour and the warning copy live here so
+ * there is exactly one of each. Two copies that drifted would be worse than the
+ * gap they close: an admin would see the same person flagged off-domain on one
+ * screen and clean on the other, with no way to tell which was right.
+ *
+ * Approving still happens in one place only, inside the company. Nothing here
+ * approves anything.
+ */
+export const OFF_DOMAIN_COLOUR = '#C9A84C';
+export const OFF_DOMAIN_LABEL = 'Off-domain';
+export const OFF_DOMAIN_WARNING = 'A nomination is on an unrecognised email domain';
+export const OFF_DOMAIN_WARNING_DETAIL = 'Check who this person is before approving the nomination.';
+
+/**
+ * True only for a real mismatch. `domainMatched` is NULL when the company
+ * records no domains at all, and that is not a mismatch.
+ */
+export function isOffDomain(member) {
+  return member?.domainMatched === false;
+}
+
+/** A membership the company created that Taranis has not yet actioned. */
+export function isPendingNomination(member) {
+  return !!member && !member.approved && !member.deactivatedAt;
+}
+
 /** Accepted upload types, matching the server-side allow-list. */
 export const ACCEPTED_UPLOAD_TYPES =
   '.pdf,.docx,.xlsx,.pptx,.csv,.txt,.png,.jpg,.jpeg,.zip';

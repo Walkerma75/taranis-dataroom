@@ -188,6 +188,67 @@ router.get('/', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /companies/nominations — every pending nomination, across all companies
+//
+// MUST stay above GET /:id, or the literal path is swallowed by the id route.
+//
+// A company admin nominating a colleague creates an approval only a Taranis
+// admin can action. Until this existed the sole place it surfaced was inside
+// that one company's Users tab, so an admin who did not think to open every
+// company in turn never learned a nomination was waiting, and the company was
+// left with the impression that nobody had answered.
+//
+// Read-only and deliberately so. Approving is still POST /companies/:id/users
+// and nothing else: there is one approval path, inside the company, and this
+// endpoint only points at it.
+//
+// Admin-only, matching the approval it leads to. A named reviewer can already
+// see nominations for the company they are assigned to.
+// ---------------------------------------------------------------------------
+router.get('/nominations', requireRole('admin'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT cu.id AS membership_id, cu.user_id, cu.company_id, cu.company_role,
+              cu.domain_matched, cu.nomination_note, cu.created_at,
+              u.display_name, u.email,
+              c.legal_name, c.status AS company_status, c.fund_id,
+              f.name AS fund_name,
+              n.display_name AS nominated_by_name
+       FROM company_users cu
+       JOIN users u ON u.id = cu.user_id
+       JOIN companies c ON c.id = cu.company_id
+       JOIN funds f ON f.id = c.fund_id
+       LEFT JOIN users n ON n.id = cu.nominated_by
+       WHERE cu.approved_by IS NULL
+         AND cu.deactivated_at IS NULL
+       ORDER BY cu.created_at`
+    );
+
+    res.json(rows.map((m) => ({
+      membershipId: m.membership_id,
+      userId: m.user_id,
+      displayName: m.display_name,
+      email: m.email,
+      companyId: m.company_id,
+      companyName: m.legal_name,
+      companyStatus: m.company_status,
+      fundId: m.fund_id,
+      fundName: m.fund_name,
+      companyRole: m.company_role,
+      // NULL when the company records no domains; false is a real mismatch and
+      // is what the approval screen flags. Same rule as /companies/:id/users.
+      domainMatched: m.domain_matched,
+      nominatedBy: m.nominated_by_name,
+      nominationNote: m.nomination_note,
+      nominatedAt: m.created_at,
+    })));
+  } catch (err) {
+    console.error('[companies] Nominations error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /companies/:id — detail
 // ---------------------------------------------------------------------------
 router.get('/:id', requireCompanyAccess(), async (req, res) => {

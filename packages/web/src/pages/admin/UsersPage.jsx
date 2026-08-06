@@ -6,9 +6,15 @@ import {
 import {
   PlusOutlined, CheckCircleOutlined, CloseCircleOutlined, MailOutlined,
   SafetyCertificateOutlined, KeyOutlined, CopyOutlined, EditOutlined,
-  SaveOutlined, SettingOutlined,
+  SaveOutlined, SettingOutlined, SolutionOutlined,
 } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../../api/client.js';
+import {
+  COMPANY_ROLE_LABELS, OFF_DOMAIN_COLOUR, OFF_DOMAIN_LABEL,
+  OFF_DOMAIN_WARNING, OFF_DOMAIN_WARNING_DETAIL,
+  isOffDomain, formatUtc,
+} from '../company/irlDisplay.js';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -74,8 +80,13 @@ const capabilityLabels = {
   canViewDocuments: 'View Documents',
 };
 
+/** Where a company user's row, and every nomination, links to. */
+const companyUsersPath = (companyId) => `/admin/companies/${companyId}?tab=users`;
+
 export default function UsersPage() {
+  const navigate = useNavigate();
   const [users, setUsers] = useState([]);
+  const [nominations, setNominations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteLoading, setInviteLoading] = useState(false);
@@ -105,8 +116,24 @@ export default function UsersPage() {
     setLoading(false);
   };
 
+  /**
+   * Pending nominations across every company.
+   *
+   * Admin-only on the server. A user who can manage users but is not an admin
+   * gets a refusal here, which is why this fails quietly rather than showing an
+   * error: they cannot approve a nomination either, so there is nothing for
+   * them to do with the list.
+   */
+  const loadNominations = async () => {
+    try {
+      const res = await api.get('/companies/nominations');
+      if (res.ok) setNominations(await res.json());
+    } catch { /* ignore */ }
+  };
+
   useEffect(() => {
     loadUsers();
+    loadNominations();
     // Load funds and categories for the permissions drawer
     Promise.all([
       api.get('/funds').then((r) => r.json()),
@@ -297,6 +324,22 @@ export default function UsersPage() {
       onFilter: (value, record) => record.role === value,
     },
     {
+      // Only a company user has one, and this is the route from their row into
+      // the company they belong to. Everyone else's cell stays empty.
+      title: 'Company',
+      key: 'company',
+      width: 200,
+      render: (_, record) => (record.companyId ? (
+        <Button
+          type="link"
+          style={{ padding: 0, height: 'auto', textAlign: 'left' }}
+          onClick={() => navigate(companyUsersPath(record.companyId))}
+        >
+          {record.companyName}
+        </Button>
+      ) : null),
+    },
+    {
       title: 'Status',
       dataIndex: 'status',
       render: (status) => <Tag color={statusColours[status]}>{status}</Tag>,
@@ -367,6 +410,75 @@ export default function UsersPage() {
     },
   ];
 
+  /**
+   * Nominations are listed here and approved inside the company.
+   *
+   * The action navigates rather than approving in place. Approving a nomination
+   * is the same call that invites a company user, and it ends with an
+   * invitation link an admin has to copy and send by hand; putting a second
+   * copy of that on this page would mean two approval paths to keep in step,
+   * for the sake of saving one click on a rare action.
+   */
+  const nominationColumns = [
+    {
+      title: 'Name',
+      dataIndex: 'displayName',
+      render: (name, row) => (
+        <Space>
+          <Text>{name}</Text>
+          {isOffDomain(row) && (
+            <Tag color={OFF_DOMAIN_COLOUR} style={{ color: '#fff', borderColor: 'transparent' }}>
+              {OFF_DOMAIN_LABEL}
+            </Tag>
+          )}
+        </Space>
+      ),
+    },
+    { title: 'Email', dataIndex: 'email' },
+    {
+      title: 'Company',
+      dataIndex: 'companyName',
+      render: (name, row) => (
+        <Space direction="vertical" size={0}>
+          <Button
+            type="link"
+            style={{ padding: 0, height: 'auto', textAlign: 'left' }}
+            onClick={() => navigate(companyUsersPath(row.companyId))}
+          >
+            {name}
+          </Button>
+          <Text type="secondary" style={{ fontSize: 12 }}>{row.fundName}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: 'Role requested',
+      dataIndex: 'companyRole',
+      render: (r) => COMPANY_ROLE_LABELS[r] || r,
+    },
+    {
+      title: 'Nominated by',
+      dataIndex: 'nominatedBy',
+      render: (n) => n || <Text type="secondary">Invited directly</Text>,
+    },
+    {
+      title: 'Nominated',
+      dataIndex: 'nominatedAt',
+      width: 170,
+      render: formatUtc,
+    },
+    {
+      title: '',
+      key: 'actions',
+      width: 150,
+      render: (_, row) => (
+        <Button type="primary" size="small" onClick={() => navigate(companyUsersPath(row.companyId))}>
+          Review and approve
+        </Button>
+      ),
+    },
+  ];
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -375,6 +487,55 @@ export default function UsersPage() {
           Invite User
         </Button>
       </div>
+
+      {/* Signpost. Company users are listed on this page but are not invited
+          from it, and nothing here used to say so. */}
+      <Alert
+        type="info"
+        showIcon
+        icon={<SolutionOutlined />}
+        style={{ marginBottom: 16 }}
+        message="Company users are invited from their company, not from this page"
+        description="This page lists everyone, including due diligence company users. To add one,
+          open Companies, choose the company and use its Users tab. Inviting from inside the company
+          is what makes it impossible to put someone into the wrong company's workspace."
+        action={(
+          <Button size="small" onClick={() => navigate('/admin/companies')}>
+            Go to Companies
+          </Button>
+        )}
+      />
+
+      {nominations.length > 0 && (
+        <Card
+          title={`Nominations awaiting approval (${nominations.length})`}
+          style={{ marginBottom: 16 }}
+        >
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Text type="secondary">
+              A company administrator has nominated a colleague. Nobody at the company can use the
+              account until Taranis approves it, and no email tells them it is waiting.
+            </Text>
+
+            {nominations.some(isOffDomain) && (
+              <Alert
+                type="warning"
+                showIcon
+                message={OFF_DOMAIN_WARNING}
+                description={OFF_DOMAIN_WARNING_DETAIL}
+              />
+            )}
+
+            <Table
+              rowKey="membershipId"
+              dataSource={nominations}
+              columns={nominationColumns}
+              pagination={false}
+              size="small"
+            />
+          </Space>
+        </Card>
+      )}
 
       <Card>
         <Table
@@ -433,7 +594,13 @@ export default function UsersPage() {
             >
               <Input placeholder="John Smith" />
             </Form.Item>
-            <Form.Item name="role" label="Role" initialValue="investor">
+            <Form.Item
+              name="role"
+              label="Role"
+              initialValue="investor"
+              extra="Company users are not invited here. Invite them from their company's Users tab
+                under Companies, so they cannot land in the wrong company's workspace."
+            >
               <Select
                 options={[
                   { value: 'admin', label: 'Admin' },
