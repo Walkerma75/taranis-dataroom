@@ -451,7 +451,8 @@ test('an offboarded company cannot be reactivated through activate', async (t) =
 
 test('inviting a company user returns a link for an admin to send by hand', async (t) => {
   const pool = fakePool([
-    ['SELECT * FROM companies WHERE id = $1', [{ id: COMPANY_A, legal_name: 'Example Bio' }]],
+    // Active: an invitation to anything else is refused by the guard below.
+    ['SELECT * FROM companies WHERE id = $1', [{ id: COMPANY_A, legal_name: 'Example Bio', status: 'active' }]],
     ['SELECT id, role FROM users WHERE email', []],
     ['INSERT INTO users (email, display_name, role, status)', [{ id: 'user-9' }]],
     ['INSERT INTO company_users', [{ id: 'm-9', company_role: 'company_admin', nominated_by: null }]],
@@ -480,7 +481,7 @@ test('inviting a company user returns a link for an admin to send by hand', asyn
 
 test('a fund-side account is never converted into a company account', async (t) => {
   const pool = fakePool([
-    ['SELECT * FROM companies WHERE id = $1', [{ id: COMPANY_A, legal_name: 'Example Bio' }]],
+    ['SELECT * FROM companies WHERE id = $1', [{ id: COMPANY_A, legal_name: 'Example Bio', status: 'active' }]],
     ['SELECT id, role FROM users WHERE email', [{ id: 'user-7', role: 'investor' }]],
   ]);
   const server = await startTestServer(MOUNTS, pool);
@@ -495,4 +496,101 @@ test('a fund-side account is never converted into a company account', async (t) 
   assert.equal(res.status, 409);
   assert.match(res.body.error, /fund-side account/);
   assert.ok(pool.sql().includes('ROLLBACK'));
+});
+
+// ---------------------------------------------------------------------------
+// No invitation before activation (HANDOVER-CW005)
+//
+// The trap this closes: an invitation issued to a pending company is accepted,
+// the person enrols in MFA, signs in, and lands in nothing, because the
+// workspace does not exist until activation seeds it and `requireCompany`
+// refuses a pending company outright.
+// ---------------------------------------------------------------------------
+
+test('an invitation is refused for a company that is not active, and nothing is written', async (t) => {
+  const expected = {
+    pending: /pending/i,
+    suspended: /suspended/i,
+    offboarded: /offboarded/i,
+  };
+
+  for (const [status, pattern] of Object.entries(expected)) {
+    const pool = fakePool([
+      ['SELECT * FROM companies WHERE id = $1', [{
+        id: COMPANY_A, legal_name: 'Example Bio', status,
+      }]],
+    ]);
+    const server = await startTestServer(MOUNTS, pool);
+
+    const res = await server.request(`/companies/${COMPANY_A}/users`, {
+      method: 'POST',
+      token: adminToken(),
+      body: { email: 'contact@examplebio.com', displayName: 'A Contact', isPrimary: true },
+    });
+
+    assert.equal(res.status, 409, `a ${status} company should refuse an invitation`);
+    assert.match(res.body.error, pattern);
+    assert.equal(res.body.companyStatus, status);
+
+    // No user, no membership, no invite, and the transaction was rolled back.
+    // The refusal lands before the email is even looked up.
+    const sql = pool.sql().join('\n');
+    assert.equal(sql.includes('INSERT INTO users'), false, `${status}: no user may be created`);
+    assert.equal(sql.includes('INSERT INTO company_users'), false, `${status}: no membership`);
+    assert.equal(sql.includes('INSERT INTO invites'), false, `${status}: no invite row`);
+    assert.equal(sql.includes('SELECT id, role FROM users WHERE email'), false);
+    assert.ok(pool.sql().includes('ROLLBACK'), `${status}: the transaction should roll back`);
+
+    await server.close();
+  }
+});
+
+test('the pending refusal tells the admin what to do about it', async (t) => {
+  const pool = fakePool([
+    ['SELECT * FROM companies WHERE id = $1', [{
+      id: COMPANY_A, legal_name: 'Example Bio', status: 'pending',
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/users`, {
+    method: 'POST',
+    token: adminToken(),
+    body: { email: 'contact@examplebio.com', displayName: 'A Contact' },
+  });
+
+  assert.equal(res.status, 409);
+  assert.match(res.body.error, /activation gates/);
+  assert.match(res.body.error, /activate/i);
+});
+
+test('approving a nomination is refused too, because it runs through the same endpoint', async (t) => {
+  // A company admin can only nominate from inside an active workspace, so this
+  // is belt and braces rather than a live path. It is asserted because the
+  // approval and the direct invitation share one handler, and a future split
+  // must not leave the approval unguarded.
+  const pool = fakePool([
+    ['SELECT * FROM companies WHERE id = $1', [{
+      id: COMPANY_A, legal_name: 'Example Bio', status: 'suspended',
+    }]],
+    ['SELECT id, role FROM users WHERE email', [{ id: 'user-9', role: 'company' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/users`, {
+    method: 'POST',
+    token: adminToken(),
+    body: {
+      email: 'nominee@examplebio.com',
+      displayName: 'A Nominee',
+      companyRole: 'company_contributor',
+    },
+  });
+
+  assert.equal(res.status, 409);
+  assert.equal(res.body.companyStatus, 'suspended');
+  // The existing membership row is untouched: this approves nothing.
+  assert.equal(pool.sql().join('\n').includes('INSERT INTO company_users'), false);
 });

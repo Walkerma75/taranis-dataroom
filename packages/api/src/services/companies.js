@@ -48,6 +48,46 @@ export function activationRefusalMessage(company) {
 }
 
 // ---------------------------------------------------------------------------
+// Invitation gate
+// ---------------------------------------------------------------------------
+
+/**
+ * A company user may only be invited once the company is ACTIVE.
+ *
+ * Before activation the workspace does not exist: a checklist is only seeded at
+ * activation, and `requireCompany` refuses a pending company outright. So an
+ * invitation issued early buys the invitee nothing but a sign-in, an MFA
+ * enrolment and an empty screen, which is the opposite of the onboarding the
+ * concept brief §4.1 describes, where the invitation is the moment the company
+ * is brought in. Suspended and offboarded are refused for the mirror reason:
+ * their access has been taken away, and issuing an invitation would hand out a
+ * link that cannot be used.
+ *
+ * Deliberately not a queue. There is no "invite now, send on activation"
+ * behaviour to get wrong; the rule is simply that activation comes first
+ * (HANDOVER-CW005 §5).
+ */
+export function canInviteUsers(company) {
+  return company?.status === 'active';
+}
+
+/** Human-readable refusal naming the status and what would fix it. */
+export function inviteRefusalMessage(company) {
+  if (canInviteUsers(company)) return null;
+  switch (company?.status) {
+    case 'suspended':
+      return 'This company is suspended, so its access is closed and nobody can be '
+           + 'invited. Reinstate it first.';
+    case 'offboarded':
+      return 'This company has been offboarded. Its access is closed permanently and '
+           + 'nobody can be invited.';
+    default:
+      return 'This company is pending. Record both activation gates and activate it '
+           + 'before inviting users, because until then they would see nothing.';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Company-side visibility
 // ---------------------------------------------------------------------------
 
