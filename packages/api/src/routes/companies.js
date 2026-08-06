@@ -966,10 +966,10 @@ reviewQueueRouter.get('/', async (req, res) => {
 
 /**
  * GET /irl-templates?fundId= — which master lists exist, and how big they are.
+ * POST /irl-templates/seed — import a committed master into a fund.
  *
- * Read-only in Phase 1a. Templates are created by the seed importer
- * (`npm -w packages/api run seed:irl`), not through the UI: the full
- * IRLTemplatesPage with item CRUD and XLSX import is Phase 2.
+ * Read from the UI, written only by the importer. The full IRLTemplatesPage with
+ * item CRUD and an XLSX upload screen is Phase 2.
  */
 export const irlTemplatesRouter = Router();
 irlTemplatesRouter.use(requireAuth, rejectCompanyRole, requireRole('admin'));
@@ -1003,6 +1003,90 @@ irlTemplatesRouter.get('/', async (req, res) => {
     })));
   } catch (err) {
     console.error('[irl-templates] List error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * POST /irl-templates/seed — create or refresh a fund's master checklist.
+ *
+ *   POST /api/irl-templates/seed  { "fundSlug": "biotech-ksa" }
+ *
+ * WHY AN ENDPOINT. Seeding used to mean a shell on the running task
+ * (`npm -w packages/api run seed:irl`). Every new fund needs a template, so that
+ * is a recurring production ritual, and a recurring ritual done by hand
+ * eventually gets done wrong. Decided by Mark, HANDOVER-CW004 §6.
+ *
+ * WHERE THE DATA COMES FROM. The committed artefact under `src/db/seeds/`, which
+ * is baked into the image — not an upload and not a path on the container. The
+ * spreadsheet lives in the fund paperwork folder on a workstation that the
+ * container cannot read, the artefact is the thing the test suite asserts 146
+ * items against, and so the rows that reach production are the exact rows CI
+ * checked. Changing the master is `tools/build-irl-seed.mjs`, a commit and a
+ * deploy, which is the review trail a due diligence request list deserves.
+ *
+ * Admin only, by the router-level guards above. Idempotent by upsert: a second
+ * call rewrites nothing that already matches and reports it as unchanged. Refs
+ * are never renumbered and nothing is ever deleted. The whole import is one
+ * transaction, so the template is never half applied.
+ */
+irlTemplatesRouter.post('/seed', async (req, res) => {
+  const { fundSlug, seed: seedName, name: templateName } = req.body || {};
+  if (!fundSlug || typeof fundSlug !== 'string') {
+    return res.status(400).json({
+      error: 'A fundSlug is required, for example { "fundSlug": "biotech-ksa" }',
+    });
+  }
+
+  try {
+    const { runIrlImport, describeImport } = await import('../db/seed-irl.js');
+    const result = await runIrlImport({
+      fundSlug: fundSlug.trim(),
+      seedName,
+      templateName,
+      createdBy: req.user.sub,
+    });
+
+    await logAudit({
+      action: 'irl_template.seeded',
+      userId: req.user.sub,
+      resource: 'irl_template',
+      resourceId: result.templateId,
+      detail: {
+        fundSlug: result.fund.slug,
+        templateName: result.templateName,
+        seed: result.seedName,
+        source: result.source,
+        created: result.created,
+        updated: result.updated,
+        skipped: result.skipped,
+        total: result.total,
+      },
+      ip: req.ip,
+    });
+
+    res.json({ message: describeImport(result), ...result });
+  } catch (err) {
+    const status = {
+      IRL_NO_FUND: 404,
+      IRL_NO_SUCH_SEED: 400,
+      IRL_BAD_SEED_NAME: 400,
+      IRL_INVALID_SEED: 422,
+      IRL_NO_ADMIN: 409,
+    }[err.code];
+
+    if (status) {
+      // Nothing was written: the seed is validated before the first statement
+      // and the transaction is rolled back on any failure.
+      return res.status(status).json({
+        error: err.message,
+        available: err.available,
+        availableFunds: err.availableFunds,
+        problems: err.problems,
+      });
+    }
+
+    console.error('[irl-templates] Seed error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

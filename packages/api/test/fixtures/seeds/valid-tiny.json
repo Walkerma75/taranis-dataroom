@@ -1,0 +1,26 @@
+{
+  "source": "fixture-not-a-real-master.xlsx",
+  "sheet": "IRL master",
+  "itemCount": 2,
+  "sectionCount": 1,
+  "items": [
+    {
+      "section": "1. Corporate",
+      "ref": "1.1",
+      "description": "Certificate of incorporation",
+      "priority": "high",
+      "sort_order": 1,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "1. Corporate",
+      "ref": "1.2",
+      "description": "Register of shareholders",
+      "priority": "standard",
+      "sort_order": 2,
+      "already_held": null,
+      "note_for_company": null
+    }
+  ]
+}
