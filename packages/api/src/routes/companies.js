@@ -30,6 +30,8 @@ import { generateInviteToken, hashToken } from '../services/auth.js';
 import {
   canActivate,
   activationRefusalMessage,
+  canInviteUsers,
+  inviteRefusalMessage,
   seedCompanyChecklist,
   summariseProgress,
   recomputeItemState,
@@ -585,6 +587,10 @@ router.get('/:id/users', requireCompanyAccess(), async (req, res) => {
  * Invites a Primary Contact, or approves a nomination the company made. Either
  * way it issues an invite link on the existing `invites` flow and returns it
  * for an admin to send by hand. NO EMAIL IS SENT: that is Phase 1b.
+ *
+ * ACTIVE ONLY. Both of those paths run through here, so one guard covers the
+ * direct invitation and the nomination approval alike. See `canInviteUsers`
+ * for why an invitation before activation is worse than no invitation at all.
  */
 router.post('/:id/users', requireRole('admin'), async (req, res) => {
   const { email, displayName, companyRole, isPrimary } = req.body;
@@ -608,6 +614,16 @@ router.post('/:id/users', requireRole('admin'), async (req, res) => {
     if (!company) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Company not found' });
+    }
+
+    // Before the user record, before the membership, before the invite: nothing
+    // is written for a company that cannot receive an invitation.
+    if (!canInviteUsers(company)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: inviteRefusalMessage(company),
+        companyStatus: company.status,
+      });
     }
 
     const { rows: [existing] } = await client.query(

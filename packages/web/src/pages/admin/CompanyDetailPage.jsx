@@ -15,7 +15,7 @@ import {
   STATE_LABELS, STATE_COLOURS, PRIORITY_LABELS, PRIORITY_COLOURS,
   COMPANY_ROLE_LABELS, COMPANY_STATUS_LABELS, ACCEPTED_UPLOAD_TYPES, MAX_UPLOAD_BYTES,
   OFF_DOMAIN_COLOUR, OFF_DOMAIN_LABEL, OFF_DOMAIN_WARNING, OFF_DOMAIN_WARNING_DETAIL,
-  isOffDomain, isPendingNomination,
+  isOffDomain, isPendingNomination, inviteBlockedReason,
   formatBytes, formatUtc,
 } from '../company/irlDisplay.js';
 
@@ -232,6 +232,11 @@ export default function CompanyDetailPage() {
     return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />;
   }
 
+  // Why the invite controls are off, or null when the company is active. The
+  // server refuses the same thing; this is so an admin is told the rule rather
+  // than shown a button that fails.
+  const inviteBlocked = inviteBlockedReason(company.status);
+
   // ---------------------------------------------------------------- Checklist
   const checklistTab = (
     <Table
@@ -435,20 +440,23 @@ export default function CompanyDetailPage() {
             render: (_, row) => (isAdmin ? (
               <Space size={4}>
                 {!row.approved && (
-                  <Button
-                    size="small"
-                    type="primary"
-                    onClick={() => {
-                      inviteForm.setFieldsValue({
-                        email: row.email,
-                        displayName: row.displayName,
-                        companyRole: row.companyRole,
-                      });
-                      setInviteOpen(true);
-                    }}
-                  >
-                    Approve and invite
-                  </Button>
+                  <Tooltip title={inviteBlocked}>
+                    <Button
+                      size="small"
+                      type="primary"
+                      disabled={!!inviteBlocked}
+                      onClick={() => {
+                        inviteForm.setFieldsValue({
+                          email: row.email,
+                          displayName: row.displayName,
+                          companyRole: row.companyRole,
+                        });
+                        setInviteOpen(true);
+                      }}
+                    >
+                      Approve and invite
+                    </Button>
+                  </Tooltip>
                 )}
                 {row.approved && !row.deactivatedAt && (
                   <Popconfirm
@@ -585,8 +593,9 @@ export default function CompanyDetailPage() {
     <Space direction="vertical" size="large" style={{ width: '100%', maxWidth: 720 }}>
       <Card title="Activation gates" size="small">
         <Paragraph type="secondary">
-          Both dates must be recorded before this company can be activated. Until then its users
-          see nothing, even if they have accepted an invitation.
+          Both dates must be recorded and the company activated before its users can be invited.
+          Activation is what creates the workspace, so an invitation sent earlier would lead to
+          an empty screen.
         </Paragraph>
 
         <Form layout="vertical">
@@ -751,9 +760,16 @@ export default function CompanyDetailPage() {
 
       <Card
         extra={isAdmin && (
-          <Button type="primary" icon={<UserAddOutlined />} onClick={() => setInviteOpen(true)}>
-            Invite a user
-          </Button>
+          <Tooltip title={inviteBlocked}>
+            <Button
+              type="primary"
+              icon={<UserAddOutlined />}
+              disabled={!!inviteBlocked}
+              onClick={() => setInviteOpen(true)}
+            >
+              Invite a user
+            </Button>
+          </Tooltip>
         )}
       >
         <Tabs

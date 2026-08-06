@@ -54,6 +54,22 @@ export const COMPANY_STATUS_LABELS = {
 };
 
 /**
+ * Why the invite controls are disabled, or null when they are not.
+ *
+ * The server refuses an invitation to any company that is not active, so this
+ * is the courtesy that stops an admin discovering the rule by hitting it. The
+ * button is disabled and explained rather than hidden, so the reason is learnt
+ * rather than hunted for (HANDOVER-CW005 §3).
+ */
+export function inviteBlockedReason(status) {
+  if (status === 'active') return null;
+  if (status === 'suspended' || status === 'offboarded') {
+    return "This company's access is closed, so nobody can be invited.";
+  }
+  return 'Activate the company first. Its users see nothing until then.';
+}
+
+/**
  * Nomination display rules.
  *
  * A nomination is now shown in two places: inside the company, on

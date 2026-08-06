@@ -13,6 +13,8 @@ import {
   missingActivationGates,
   canActivate,
   activationRefusalMessage,
+  canInviteUsers,
+  inviteRefusalMessage,
   isVisibleToCompany,
   companyVisibleItems,
   companySafeItem,
@@ -61,6 +63,48 @@ test('there is no refusal message once both gates are recorded', () => {
     activationRefusalMessage({ nda_executed_at: new Date(), iems_screened_at: new Date() }),
     null
   );
+});
+
+// ---------------------------------------------------------------------------
+// The invitation gate (HANDOVER-CW005)
+// ---------------------------------------------------------------------------
+
+test('only an active company can have users invited', () => {
+  assert.equal(canInviteUsers({ status: 'active' }), true);
+  for (const status of ['pending', 'suspended', 'offboarded']) {
+    assert.equal(canInviteUsers({ status }), false, `${status} must not be invitable`);
+  }
+  // A company row with no status at all is not active, so it is not invitable.
+  assert.equal(canInviteUsers({}), false);
+  assert.equal(canInviteUsers(null), false);
+});
+
+test('recording both gates is not enough on its own: the company must be activated', () => {
+  // The trap CW005 closes. Both gates recorded, still pending, still no
+  // workspace for an invitee to arrive in.
+  const company = {
+    status: 'pending',
+    nda_executed_at: new Date(),
+    iems_screened_at: new Date(),
+  };
+  assert.equal(canActivate(company), true);
+  assert.equal(canInviteUsers(company), false);
+});
+
+test('the invitation refusal names the status and what would fix it', () => {
+  assert.match(inviteRefusalMessage({ status: 'pending' }), /pending/);
+  assert.match(inviteRefusalMessage({ status: 'pending' }), /activate/i);
+  assert.match(inviteRefusalMessage({ status: 'suspended' }), /Reinstate/);
+  assert.match(inviteRefusalMessage({ status: 'offboarded' }), /offboarded/);
+
+  // UK English, no em dashes anywhere in user-facing copy.
+  for (const status of ['pending', 'suspended', 'offboarded']) {
+    assert.equal(inviteRefusalMessage({ status }).includes('—'), false);
+  }
+});
+
+test('there is no invitation refusal for an active company', () => {
+  assert.equal(inviteRefusalMessage({ status: 'active' }), null);
 });
 
 // ---------------------------------------------------------------------------
