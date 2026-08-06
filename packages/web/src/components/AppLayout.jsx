@@ -61,9 +61,14 @@ export default function AppLayout() {
       ? [
           { type: 'divider' },
           {
+            // Labelled for the question people actually arrive with. "Due
+            // Diligence" described the section accurately and still sent
+            // someone looking for "where do I add a company" past it; the
+            // page's own heading carries the due diligence framing instead,
+            // and Review Queue sitting beneath it keeps the grouping obvious.
             key: '/admin/companies',
             icon: <SolutionOutlined />,
-            label: 'Due Diligence',
+            label: 'Companies',
           },
           {
             key: '/admin/review-queue',

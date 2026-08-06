@@ -10,15 +10,28 @@ const router = Router();
 router.use(requireAuth, rejectCompanyRole);
 
 // GET /users — list all users (admin only)
+//
+// Company users are listed here alongside fund users, so the row has to say
+// which company they belong to and link to it. The membership join is safe to
+// make flat: a user with global role 'company' holds exactly one live
+// membership (migration 011), and every other role holds none, so this cannot
+// fan a user out into several rows.
+//
+// Membership is read here for display only. Nothing about company access is
+// decided from this route: that stays with the company middleware, which
+// re-reads membership on every request.
 router.get('/', requireRole('admin'), async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT u.id, u.email, u.display_name, u.role, u.status, u.created_at, u.updated_at,
              COALESCE(m.totp_verified, false) AS mfa_enabled,
              COALESCE(u.capabilities, '{}') AS capabilities,
+             cu.company_id, c.legal_name AS company_name,
              (SELECT COUNT(*) FROM grants g WHERE g.user_id = u.id AND g.revoked_at IS NULL) AS active_grants
       FROM users u
       LEFT JOIN user_mfa m ON m.user_id = u.id
+      LEFT JOIN company_users cu ON cu.user_id = u.id AND cu.deactivated_at IS NULL
+      LEFT JOIN companies c ON c.id = cu.company_id
       ORDER BY u.created_at DESC
     `);
 
@@ -30,6 +43,8 @@ router.get('/', requireRole('admin'), async (req, res) => {
       status: r.status,
       mfaEnabled: r.mfa_enabled,
       capabilities: r.capabilities || {},
+      companyId: r.company_id || null,
+      companyName: r.company_name || null,
       activeGrants: parseInt(r.active_grants, 10),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
