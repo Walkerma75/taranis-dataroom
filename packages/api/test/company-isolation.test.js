@@ -26,7 +26,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import companyPortalRoutes from '../src/routes/company-portal.js';
-import companyRoutes, { reviewQueueRouter, companyFilesRouter } from '../src/routes/companies.js';
+import companyRoutes, {
+  reviewQueueRouter,
+  companyFilesRouter,
+  irlTemplatesRouter,
+} from '../src/routes/companies.js';
 import fundRoutes from '../src/routes/funds.js';
 import documentRoutes from '../src/routes/documents.js';
 import grantRoutes from '../src/routes/grants.js';
@@ -55,6 +59,7 @@ const FUND_MOUNTS = [
   ['/notices', noticeRoutes],
   ['/users', userRoutes],
   ['/audit', auditRoutes],
+  ['/irl-templates', irlTemplatesRouter],
 ];
 
 const COMPANY_MOUNTS = [
@@ -82,6 +87,7 @@ test('a company token is refused by every fund-side route', async (t) => {
     '/notices',
     '/users',
     '/audit',
+    '/irl-templates',
   ];
 
   for (const path of paths) {
@@ -126,6 +132,13 @@ test('a company token cannot write fund-side either', async (t) => {
     method: 'POST', token, body: { userId: 'x', fundId: 'y', categoryId: 'z' },
   });
   assert.equal(grant.status, 403);
+
+  // The IRL seed endpoint writes the master checklist every company is measured
+  // against, so a company token reaching it would be the worst of the set.
+  const seed = await server.request('/irl-templates/seed', {
+    method: 'POST', token, body: { fundSlug: 'biotech-ksa' },
+  });
+  assert.equal(seed.status, 403);
 
   assert.equal(pool.calls.length, 0, 'no fund-side query should have run');
 });
