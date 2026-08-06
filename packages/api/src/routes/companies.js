@@ -931,6 +931,19 @@ router.patch('/:id/irl-items/:itemId', requireCompanyAccess({ write: true }), as
 // ---------------------------------------------------------------------------
 // Files, Taranis side
 // ---------------------------------------------------------------------------
+/**
+ * GET /companies/:id/files
+ *
+ * Every row carries the server's own `downloadDecision` answer as `downloadable`
+ * and `downloadBlockedReason`, because the rule depends on which scanner backend
+ * is live and the browser has no way to know that. Without this the UI would
+ * have to guess, and the guess would be wrong the day a real backend is
+ * configured: `pending` is servable under the stub and refused under ClamAV, so
+ * a client-side "infected is the only blocked state" would start offering
+ * downloads the API refuses. Publishing the answer keeps the rule in one place
+ * and lets it tighten by itself, which is the property `downloadDecision` was
+ * written to have (HANDOVER-CW006 §3 item 3).
+ */
 router.get('/:id/files', requireCompanyAccess(), async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -947,25 +960,31 @@ router.get('/:id/files', requireCompanyAccess(), async (req, res) => {
       [req.params.id]
     );
 
-    res.json(rows.map((f) => ({
-      id: f.id,
-      filename: f.filename,
-      description: f.description,
-      sizeBytes: Number(f.size_bytes),
-      contentType: f.content_type,
-      version: f.version,
-      supersedes: f.supersedes,
-      status: f.status,
-      scanState: f.scan_state,
-      scanBackend: f.scan_backend,
-      itemRef: f.item_ref,
-      itemSection: f.item_section,
-      irlItemId: f.irl_item_id,
-      receiptRef: f.receipt_ref,
-      submittedAt: f.submitted_at,
-      uploadedBy: f.uploaded_by_name,
-      uploadedAt: f.created_at,
-    })));
+    res.json(rows.map((f) => {
+      const decision = downloadDecision(f.scan_state);
+      return {
+        id: f.id,
+        filename: f.filename,
+        description: f.description,
+        sizeBytes: Number(f.size_bytes),
+        contentType: f.content_type,
+        version: f.version,
+        supersedes: f.supersedes,
+        status: f.status,
+        scanState: f.scan_state,
+        scanBackend: f.scan_backend,
+        downloadable: decision.allowed,
+        downloadUnscanned: decision.unscanned,
+        downloadBlockedReason: decision.reason,
+        itemRef: f.item_ref,
+        itemSection: f.item_section,
+        irlItemId: f.irl_item_id,
+        receiptRef: f.receipt_ref,
+        submittedAt: f.submitted_at,
+        uploadedBy: f.uploaded_by_name,
+        uploadedAt: f.created_at,
+      };
+    }));
   } catch (err) {
     console.error('[companies] Files error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1337,7 +1356,8 @@ reviewQueueRouter.get('/', async (req, res) => {
 
   try {
     const { rows } = await pool.query(
-      `SELECT f.id, f.filename, f.description, f.size_bytes, f.scan_state, f.created_at,
+      `SELECT f.id, f.filename, f.description, f.size_bytes, f.scan_state,
+              f.scan_backend, f.created_at,
               c.id AS company_id, c.legal_name,
               i.ref AS item_ref, i.section AS item_section,
               b.receipt_ref, b.submitted_at
@@ -1350,19 +1370,29 @@ reviewQueueRouter.get('/', async (req, res) => {
       params
     );
 
-    res.json(rows.map((f) => ({
-      id: f.id,
-      companyId: f.company_id,
-      companyName: f.legal_name,
-      filename: f.filename,
-      description: f.description,
-      sizeBytes: Number(f.size_bytes),
-      scanState: f.scan_state,
-      itemRef: f.item_ref,
-      itemSection: f.item_section,
-      receiptRef: f.receipt_ref,
-      submittedAt: f.submitted_at,
-    })));
+    // Same server-published download decision as the Files tab, for the same
+    // reason: this is the other screen a reviewer opens a file from, and the two
+    // must never disagree about what is downloadable.
+    res.json(rows.map((f) => {
+      const decision = downloadDecision(f.scan_state);
+      return {
+        id: f.id,
+        companyId: f.company_id,
+        companyName: f.legal_name,
+        filename: f.filename,
+        description: f.description,
+        sizeBytes: Number(f.size_bytes),
+        scanState: f.scan_state,
+        scanBackend: f.scan_backend,
+        downloadable: decision.allowed,
+        downloadUnscanned: decision.unscanned,
+        downloadBlockedReason: decision.reason,
+        itemRef: f.item_ref,
+        itemSection: f.item_section,
+        receiptRef: f.receipt_ref,
+        submittedAt: f.submitted_at,
+      };
+    }));
   } catch (err) {
     console.error('[review-queue] Error:', err);
     res.status(500).json({ error: 'Internal server error' });

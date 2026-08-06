@@ -16,6 +16,8 @@ import {
   COMPANY_ROLE_LABELS, COMPANY_STATUS_LABELS, ACCEPTED_UPLOAD_TYPES, MAX_UPLOAD_BYTES,
   OFF_DOMAIN_COLOUR, OFF_DOMAIN_LABEL, OFF_DOMAIN_WARNING, OFF_DOMAIN_WARNING_DETAIL,
   isOffDomain, isPendingNomination, inviteBlockedReason,
+  UNSCANNED_WARNING, UNSCANNED_WARNING_DETAIL, isUnscanned,
+  scanLabel, scanColour, scanBackendHint,
   formatBytes, formatUtc,
 } from '../company/irlDisplay.js';
 
@@ -57,6 +59,7 @@ export default function CompanyDetailPage() {
   const [publishFile, setPublishFile] = useState(null);
   const [publishing, setPublishing] = useState(false);
   const [withdrawDoc, setWithdrawDoc] = useState(null);
+  const [downloadingFile, setDownloadingFile] = useState(null);
   const [inviteForm] = Form.useForm();
   const [statusForm] = Form.useForm();
   const [publishForm] = Form.useForm();
@@ -212,6 +215,35 @@ export default function CompanyDetailPage() {
     }
   };
 
+  /**
+   * Open a file a company submitted.
+   *
+   * Whether this is offered at all is the server's decision, carried on the row
+   * as `downloadable`. Nothing here re-derives the rule: an unscanned file is
+   * downloadable under the stub backend and refused under a real one, and only
+   * the API knows which is live (HANDOVER-CW006 §3 item 3).
+   */
+  const downloadFile = async (file) => {
+    setDownloadingFile(file.id);
+    try {
+      const res = await apiFetch(`/company-files/${file.id}/download`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || 'This file could not be downloaded.');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      message.error(err.message);
+    }
+    setDownloadingFile(null);
+  };
+
   const download = async (format) => {
     try {
       const res = await apiFetch(`/companies/${companyId}/export?format=${format}`);
@@ -326,15 +358,13 @@ export default function CompanyDetailPage() {
   // -------------------------------------------------------------------- Files
   const filesTab = (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      {files.some((f) => f.scanState === 'pending' || f.scanState === 'error') && (
+      {files.some(isUnscanned) && (
         <Alert
           type="warning"
           showIcon
           icon={<WarningOutlined />}
-          message="These files have not been checked for viruses"
-          description="No virus scanner is configured on this deployment, so nothing a company
-            uploads is inspected before you open it. This is a known and accepted position for the
-            beta. Treat attachments with the same care you would an email from outside the firm."
+          message={UNSCANNED_WARNING}
+          description={UNSCANNED_WARNING_DETAIL}
         />
       )}
       <Table
@@ -344,7 +374,19 @@ export default function CompanyDetailPage() {
         size="small"
         columns={[
           { title: 'Ref', dataIndex: 'itemRef', width: 80, render: (r) => (r ? <Text style={{ fontFamily: 'monospace' }}>{r}</Text> : <Tag>Extra</Tag>) },
-          { title: 'File', dataIndex: 'filename' },
+          {
+            title: 'File',
+            dataIndex: 'filename',
+            // A superseded version keeps its own row, so two rows can carry the
+            // same filename. The version number is the only thing that tells
+            // them apart, and both stay downloadable.
+            render: (filename, row) => (
+              <Space size={6}>
+                <Text>{filename}</Text>
+                {row.version > 1 && <Tag>v{row.version}</Tag>}
+              </Space>
+            ),
+          },
           { title: 'Description', dataIndex: 'description' },
           { title: 'Size', dataIndex: 'sizeBytes', width: 90, render: formatBytes },
           { title: 'Receipt', dataIndex: 'receiptRef', width: 170, render: (r) => <Text style={{ fontFamily: 'monospace' }}>{r}</Text> },
@@ -354,14 +396,9 @@ export default function CompanyDetailPage() {
             dataIndex: 'scanState',
             width: 110,
             render: (s, row) => (
-              <Tooltip
-                title={row.scanBackend === 'stub'
-                  ? 'Never inspected: no scanner was configured when this was uploaded'
-                  : row.scanBackend}
-              >
-                <Tag color={s === 'clean' ? '#3A5247' : s === 'infected' ? '#B54A32' : '#C9A84C'}
-                     style={{ color: '#fff', borderColor: 'transparent' }}>
-                  {s === 'clean' ? 'Clean' : s === 'infected' ? 'Quarantined' : 'Not scanned'}
+              <Tooltip title={scanBackendHint(row)}>
+                <Tag color={scanColour(s)} style={{ color: '#fff', borderColor: 'transparent' }}>
+                  {scanLabel(s)}
                 </Tag>
               </Tooltip>
             ),
@@ -379,12 +416,30 @@ export default function CompanyDetailPage() {
           {
             title: '',
             key: 'actions',
-            width: 110,
-            render: (_, row) => (canWrite ? (
-              <Button size="small" onClick={() => { setStatusFile(row); statusForm.setFieldsValue({ status: row.status }); }}>
-                Set status
-              </Button>
-            ) : null),
+            width: 210,
+            // Download is NOT gated on canWrite. A readonly reviewer is assigned
+            // to read this company's diligence, and reading it means opening the
+            // documents; the API agrees, resolving the download at read level.
+            render: (_, row) => (
+              <Space size={4}>
+                <Tooltip title={row.downloadBlockedReason}>
+                  <Button
+                    size="small"
+                    icon={<DownloadOutlined />}
+                    disabled={!row.downloadable}
+                    loading={downloadingFile === row.id}
+                    onClick={() => downloadFile(row)}
+                  >
+                    Download
+                  </Button>
+                </Tooltip>
+                {canWrite && (
+                  <Button size="small" onClick={() => { setStatusFile(row); statusForm.setFieldsValue({ status: row.status }); }}>
+                    Set status
+                  </Button>
+                )}
+              </Space>
+            ),
           },
         ]}
       />

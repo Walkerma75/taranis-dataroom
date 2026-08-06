@@ -100,6 +100,55 @@ export function isPendingNomination(member) {
   return !!member && !member.approved && !member.deactivatedAt;
 }
 
+/**
+ * The unscanned-files warning, shown wherever a reviewer can open something a
+ * company submitted.
+ *
+ * The wording and placement were reviewed on production and ratified as correct
+ * (HANDOVER-CW006 §5), so it is lifted here verbatim rather than retyped on the
+ * second screen. One copy, because a security warning that says two different
+ * things in two places is worse than either version of it.
+ */
+export const UNSCANNED_WARNING = 'These files have not been checked for viruses';
+export const UNSCANNED_WARNING_DETAIL = 'No virus scanner is configured on this deployment, so '
+  + 'nothing a company uploads is inspected before you open it. This is a known and accepted '
+  + 'position for the beta. Treat attachments with the same care you would an email from '
+  + 'outside the firm.';
+
+/** True when a row is one the unscanned warning is about. */
+export function isUnscanned(file) {
+  return file?.scanState === 'pending' || file?.scanState === 'error';
+}
+
+/**
+ * The scan chip. Identical on the Files tab and the Review Queue, so a reviewer
+ * reads the same colour and the same word for the same file on either screen.
+ */
+export const SCAN_LABELS = {
+  clean: 'Clean',
+  infected: 'Quarantined',
+};
+
+export const SCAN_COLOURS = {
+  clean: '#3A5247',
+  infected: '#B54A32',
+};
+
+export function scanLabel(state) {
+  return SCAN_LABELS[state] || 'Not scanned';
+}
+
+export function scanColour(state) {
+  return SCAN_COLOURS[state] || '#C9A84C';
+}
+
+/** What the scan chip's tooltip says: which backend, or that there was none. */
+export function scanBackendHint(file) {
+  return file?.scanBackend === 'stub'
+    ? 'Never inspected: no scanner was configured when this was uploaded'
+    : file?.scanBackend;
+}
+
 /** Accepted upload types, matching the server-side allow-list. */
 export const ACCEPTED_UPLOAD_TYPES =
   '.pdf,.docx,.xlsx,.pptx,.csv,.txt,.png,.jpg,.jpeg,.zip';

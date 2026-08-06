@@ -201,6 +201,10 @@ test('a company token cannot reach the Taranis-side company routes', async (t) =
     `/companies/${COMPANY_A}/export?format=gaps`,
     '/review-queue',
     '/company-files/any-id/history',
+    // The admin download route. A company user reads their own files through
+    // /company/*; this is the reviewer-side path and carries every company the
+    // caller can see, so it must refuse the role outright (HANDOVER-CW006 §4).
+    '/company-files/any-id/download',
   ]) {
     const res = await server.request(path, { token });
     assert.equal(res.status, 403, `${path} should refuse a company token, got ${res.status}`);
