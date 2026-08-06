@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
   Typography, Card, Tabs, Table, Button, Space, Tag, Alert, Spin, message, Descriptions,
-  DatePicker, Input, Form, Modal, Select, Checkbox, Progress, Popconfirm, Tooltip,
+  DatePicker, Input, Form, Modal, Select, Checkbox, Progress, Popconfirm, Tooltip, Upload,
 } from 'antd';
 import {
   ArrowLeftOutlined, UserAddOutlined, CopyOutlined, WarningOutlined, DownloadOutlined,
+  UploadOutlined, SendOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -12,7 +13,8 @@ import { api, apiFetch } from '../../api/client.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
   STATE_LABELS, STATE_COLOURS, PRIORITY_LABELS, PRIORITY_COLOURS,
-  COMPANY_ROLE_LABELS, COMPANY_STATUS_LABELS, formatBytes, formatUtc,
+  COMPANY_ROLE_LABELS, COMPANY_STATUS_LABELS, ACCEPTED_UPLOAD_TYPES, MAX_UPLOAD_BYTES,
+  formatBytes, formatUtc,
 } from '../company/irlDisplay.js';
 
 const { Title, Text, Paragraph } = Typography;
@@ -34,23 +36,31 @@ export default function CompanyDetailPage() {
   const [items, setItems] = useState([]);
   const [files, setFiles] = useState([]);
   const [members, setMembers] = useState([]);
+  const [shared, setShared] = useState([]);
   const [loading, setLoading] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteLink, setInviteLink] = useState(null);
   const [statusFile, setStatusFile] = useState(null);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [publishFile, setPublishFile] = useState(null);
+  const [publishing, setPublishing] = useState(false);
+  const [withdrawDoc, setWithdrawDoc] = useState(null);
   const [inviteForm] = Form.useForm();
   const [statusForm] = Form.useForm();
+  const [publishForm] = Form.useForm();
+  const [withdrawForm] = Form.useForm();
 
   const canWrite = isAdmin || company?.accessLevel === 'reviewer';
 
   const load = async () => {
     setLoading(true);
     try {
-      const [c, i, f, u] = await Promise.all([
+      const [c, i, f, u, s] = await Promise.all([
         api.get(`/companies/${companyId}`),
         api.get(`/companies/${companyId}/irl-items`),
         api.get(`/companies/${companyId}/files`),
         api.get(`/companies/${companyId}/users`),
+        api.get(`/companies/${companyId}/shared-files`),
       ]);
       const body = await c.json();
       if (!c.ok) throw new Error(body.error);
@@ -58,6 +68,7 @@ export default function CompanyDetailPage() {
       setItems(await i.json());
       setFiles(await f.json());
       setMembers(await u.json());
+      setShared(await s.json());
     } catch (err) {
       message.error(err.message);
     }
@@ -110,6 +121,80 @@ export default function CompanyDetailPage() {
       setStatusFile(null);
       statusForm.resetFields();
       load();
+    } catch (err) {
+      message.error(err.message);
+    }
+  };
+
+  /**
+   * Publish a document into the company's workspace.
+   *
+   * The confirmation copy says plainly that this is visible to the company and
+   * that no email is sent. Both matter: this is the one action on this screen
+   * that puts something in front of the counterparty, and nothing tells them it
+   * has arrived until somebody says so.
+   */
+  const publish = async () => {
+    const values = await publishForm.validateFields();
+    if (!publishFile) {
+      message.error('Choose a file to share.');
+      return;
+    }
+    setPublishing(true);
+    try {
+      const form = new FormData();
+      form.append('file', publishFile);
+      form.append('title', values.title.trim());
+      if (values.description) form.append('description', values.description.trim());
+
+      const res = await apiFetch(`/companies/${companyId}/shared-files`, {
+        method: 'POST', body: form,
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error);
+
+      message.success(body.message);
+      publishForm.resetFields();
+      setPublishFile(null);
+      setPublishOpen(false);
+      load();
+    } catch (err) {
+      if (err.errorFields) return;   // form validation, already shown inline
+      message.error(err.message);
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const withdrawShared = async (doc, reason) => {
+    try {
+      const res = await api.post(
+        `/companies/${companyId}/shared-files/${doc.id}/withdraw`,
+        { reason: reason || null }
+      );
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error);
+      message.success(body.message);
+      load();
+    } catch (err) {
+      message.error(err.message);
+    }
+  };
+
+  const downloadShared = async (doc) => {
+    try {
+      const res = await apiFetch(`/companies/${companyId}/shared-files/${doc.id}/download`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || 'Download failed');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = doc.filename;
+      a.click();
+      URL.revokeObjectURL(url);
     } catch (err) {
       message.error(err.message);
     }
@@ -374,6 +459,113 @@ export default function CompanyDetailPage() {
     </Space>
   );
 
+  // -------------------------------------------------------- Shared documents
+  //
+  // The one place on this screen where something leaves Taranis for the
+  // counterparty. Withdrawn rows stay in the table, greyed and labelled, rather
+  // than disappearing: if the company downloaded something before it was pulled,
+  // the fact that it was ever published has to be visible here and not only in
+  // the audit log.
+  const liveShared = shared.filter((d) => !d.withdrawnAt);
+
+  const sharedTab = (
+    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      <Alert
+        type="info"
+        showIcon
+        message="No email is sent"
+        description="Publishing a document makes it visible in the company's portal straight away,
+          but nothing tells them it is there. Let the company know separately until notifications
+          are switched on."
+      />
+
+      {canWrite && (
+        <Button type="primary" icon={<SendOutlined />} onClick={() => setPublishOpen(true)}>
+          Share a document
+        </Button>
+      )}
+
+      <Table
+        rowKey="id"
+        dataSource={shared}
+        pagination={false}
+        size="small"
+        locale={{ emptyText: 'Nothing has been shared with this company yet.' }}
+        rowClassName={(row) => (row.withdrawnAt ? 'taranis-row-withdrawn' : '')}
+        columns={[
+          {
+            title: 'Title',
+            dataIndex: 'title',
+            render: (title, row) => (
+              <Space direction="vertical" size={0}>
+                <Text delete={!!row.withdrawnAt} strong={!row.withdrawnAt}>{title}</Text>
+                {row.description && <Text type="secondary">{row.description}</Text>}
+              </Space>
+            ),
+          },
+          { title: 'File', dataIndex: 'filename' },
+          { title: 'Size', dataIndex: 'sizeBytes', width: 90, render: formatBytes },
+          {
+            title: 'Shared',
+            key: 'published',
+            width: 230,
+            render: (_, row) => (
+              <Space direction="vertical" size={0}>
+                <Text>{formatUtc(row.publishedAt)}</Text>
+                <Text type="secondary">by {row.publishedBy}</Text>
+              </Space>
+            ),
+          },
+          {
+            title: 'Status',
+            key: 'status',
+            width: 240,
+            render: (_, row) => (row.withdrawnAt ? (
+              <Space direction="vertical" size={0}>
+                <Tag color="#8C8C8C" style={{ color: '#fff', borderColor: 'transparent' }}>
+                  Withdrawn
+                </Tag>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {formatUtc(row.withdrawnAt)} by {row.withdrawnBy}
+                </Text>
+                {row.withdrawnReason && (
+                  <Text type="secondary" style={{ fontSize: 12 }}>{row.withdrawnReason}</Text>
+                )}
+              </Space>
+            ) : (
+              <Tag color="#3A5247" style={{ color: '#fff', borderColor: 'transparent' }}>
+                Visible to the company
+              </Tag>
+            )),
+          },
+          {
+            title: '',
+            key: 'actions',
+            width: 210,
+            render: (_, row) => (
+              <Space size={4}>
+                <Button size="small" icon={<DownloadOutlined />} onClick={() => downloadShared(row)}>
+                  Download
+                </Button>
+                {canWrite && !row.withdrawnAt && (
+                  <Button size="small" danger onClick={() => setWithdrawDoc(row)}>
+                    Withdraw
+                  </Button>
+                )}
+              </Space>
+            ),
+          },
+        ]}
+      />
+
+      <Text type="secondary">
+        Withdrawing hides a document from the company. The record of the publication and of any
+        downloads is kept permanently, so a withdrawn document is still accounted for. To share it
+        again, publish it again.
+      </Text>
+    </Space>
+  );
+
   // ----------------------------------------------------------------- Settings
   const gatesRecorded = company.ndaExecutedAt && company.iemsScreenedAt;
 
@@ -557,6 +749,7 @@ export default function CompanyDetailPage() {
             { key: 'checklist', label: `Checklist (${items.length})`, children: checklistTab },
             { key: 'files', label: `Files (${files.length})`, children: filesTab },
             { key: 'users', label: `Users (${members.length})`, children: usersTab },
+            { key: 'shared', label: `Shared documents (${liveShared.length})`, children: sharedTab },
             { key: 'settings', label: 'Settings', children: settingsTab },
           ]}
         />
@@ -615,6 +808,83 @@ export default function CompanyDetailPage() {
         <Paragraph copyable={{ text: inviteLink, icon: <CopyOutlined /> }} code style={{ wordBreak: 'break-all' }}>
           {inviteLink}
         </Paragraph>
+      </Modal>
+
+      <Modal
+        title="Share a document with this company"
+        open={publishOpen}
+        onCancel={() => { setPublishOpen(false); setPublishFile(null); }}
+        onOk={publish}
+        okText="Share with the company"
+        confirmLoading={publishing}
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message={`This will be visible to everyone at ${company.legalName}`}
+          description="All of their users can download it, including viewers. Check the document
+            carries nothing internal before you share it."
+          style={{ marginBottom: 16 }}
+        />
+        <Form form={publishForm} layout="vertical" requiredMark={false}>
+          <Form.Item
+            name="title"
+            label="Title"
+            extra="The company sees this. Name the document as they would."
+            rules={[{ required: true, message: 'Please give the document a title' }]}
+          >
+            <Input placeholder="For example: information request pack" />
+          </Form.Item>
+          <Form.Item name="description" label="Description" extra="Optional. Also visible to them.">
+            <Input.TextArea rows={2} maxLength={500} showCount />
+          </Form.Item>
+          <Form.Item label="File" required>
+            <Upload
+              accept={ACCEPTED_UPLOAD_TYPES}
+              maxCount={1}
+              fileList={publishFile ? [{ uid: '1', name: publishFile.name }] : []}
+              beforeUpload={(f) => {
+                if (f.size > MAX_UPLOAD_BYTES) {
+                  message.error('Files must be 200 MB or smaller.');
+                  return Upload.LIST_IGNORE;
+                }
+                setPublishFile(f);
+                return false;
+              }}
+              onRemove={() => setPublishFile(null)}
+            >
+              <Button icon={<UploadOutlined />}>Choose a file</Button>
+            </Upload>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={`Withdraw: ${withdrawDoc?.title || ''}`}
+        open={!!withdrawDoc}
+        onCancel={() => { setWithdrawDoc(null); withdrawForm.resetFields(); }}
+        okText="Withdraw"
+        okButtonProps={{ danger: true }}
+        onOk={async () => {
+          const values = await withdrawForm.validateFields();
+          await withdrawShared(withdrawDoc, values.reason);
+          setWithdrawDoc(null);
+          withdrawForm.resetFields();
+        }}
+      >
+        <Paragraph>
+          The company will no longer see this document. Nothing is deleted: the publication, the
+          withdrawal and any downloads they already made stay on the record.
+        </Paragraph>
+        <Form form={withdrawForm} layout="vertical" requiredMark={false}>
+          <Form.Item
+            name="reason"
+            label="Reason"
+            extra="Internal only. The company does not see this."
+          >
+            <Input.TextArea rows={2} placeholder="For example: superseded by a corrected version" />
+          </Form.Item>
+        </Form>
       </Modal>
 
       <Modal

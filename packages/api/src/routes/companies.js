@@ -14,6 +14,10 @@
  * item 3). Notifications to admin@ are Phase 1b.
  */
 import { Router } from 'express';
+import multer from 'multer';
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { pool } from '../db.js';
 import {
   requireAuth,
@@ -35,9 +39,50 @@ import {
   buildGapsWorkbook,
   exportableItem,
 } from '../services/irl-exports.js';
+import { getStorage, StorageNotFoundError, STAGING_ROOT } from '../services/storage.js';
+import { getScanner, downloadDecision } from '../services/scanner.js';
+import { contentDispositionFilename } from '../services/document-files.js';
+import {
+  SHARED_ALLOWED_EXTENSIONS,
+  SHARED_MAX_FILE_BYTES,
+  storeSharedFile,
+  cleanupSharedStaging,
+  adminSharedView,
+} from '../services/company-shared.js';
 
 const router = Router();
 router.use(requireAuth, rejectCompanyRole);
+
+/**
+ * Staging for a shared-document publication. Identical in shape to the company
+ * upload path in company-portal.js: the file lands in a per-request temp
+ * directory, is scanned and streamed into the store, and the directory goes.
+ * Nothing is left on container-local disk.
+ */
+const sharedStaging = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    try {
+      fs.mkdirSync(STAGING_ROOT, { recursive: true });
+      cb(null, fs.mkdtempSync(path.join(STAGING_ROOT, 'shared-publish-')));
+    } catch (err) {
+      cb(err);
+    }
+  },
+  filename: (_req, file, cb) => {
+    const unique = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+    cb(null, `${unique}${path.extname(file.originalname)}`);
+  },
+});
+
+const publishUpload = multer({
+  storage: sharedStaging,
+  limits: { fileSize: SHARED_MAX_FILE_BYTES },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (SHARED_ALLOWED_EXTENSIONS.includes(ext)) cb(null, true);
+    else cb(new Error(`File type ${ext} is not accepted`));
+  },
+});
 
 /** Companies the caller can see at all: everything for an admin, assignments otherwise. */
 function visibilityClause(user, params) {
@@ -846,6 +891,289 @@ router.get('/:id/files', requireCompanyAccess(), async (req, res) => {
     })));
   } catch (err) {
     console.error('[companies] Files error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Shared documents — Taranis to company
+//
+// The only path on this platform where bytes leave Taranis for a counterparty.
+// A published document is read-only to the company, is visible to that company
+// and no other, and is never hard-deleted.
+//
+// ACCESS LEVEL. Publishing and withdrawing take `write: true`, so an admin or
+// an assigned 'reviewer' can do both and a 'readonly' assignment can do
+// neither. That matches `note_for_company` and the file-status note, which are
+// also company-visible content written at reviewer level: a specialist DD
+// consultant who can tell a company what is wrong with a file should be able to
+// send them the document that explains it. Every publication and withdrawal
+// records the actor in `audit_log`.
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /companies/:id/shared-files — publish a document into a company workspace
+ *
+ * Multipart. `title` is required and is what the company sees; `description` is
+ * optional context. The file is scanned before the bytes reach the bucket, for
+ * the reasons written into services/company-shared.js.
+ */
+router.post(
+  '/:id/shared-files',
+  requireCompanyAccess({ write: true }),
+  publishUpload.single('file'),
+  async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'A file is required' });
+
+    const { title, description } = req.body;
+    if (!title || !title.trim()) {
+      cleanupSharedStaging(req.file.destination);
+      return res.status(400).json({
+        error: 'A title is required. The company sees this, so name the document as they would.',
+      });
+    }
+
+    try {
+      // An offboarded company must not be given new material: its access is
+      // revoked, so publishing would write a row nobody can ever read.
+      const { rows: [company] } = await pool.query(
+        `SELECT id, legal_name, status FROM companies WHERE id = $1`,
+        [req.params.id]
+      );
+      if (!company) {
+        cleanupSharedStaging(req.file.destination);
+        return res.status(404).json({ error: 'Company not found' });
+      }
+      if (company.status === 'offboarded') {
+        cleanupSharedStaging(req.file.destination);
+        return res.status(409).json({
+          error: 'This company has been offboarded and can no longer be sent documents.',
+        });
+      }
+
+      const sharedFileId = crypto.randomUUID();
+      const storage = await getStorage();
+      const scanner = getScanner();
+
+      const stored = await storeSharedFile({
+        file: req.file,
+        companyId: company.id,
+        sharedFileId,
+        storage,
+        scanner,
+      });
+
+      // Stricter than the company-upload path on purpose: an infected shared
+      // document is not kept in quarantine, it is simply refused. A company
+      // upload is evidence; this is ours, and can be published again.
+      if (!stored.stored) {
+        await logAudit({
+          action: 'company_shared.published',
+          userId: req.user.sub,
+          resource: 'company',
+          resourceId: company.id,
+          detail: {
+            filename: req.file.originalname,
+            rejected: true,
+            scanState: stored.verdict.state,
+          },
+          ip: req.ip,
+        });
+        return res.status(422).json({
+          error: 'This file did not pass the security scan and has not been published.',
+        });
+      }
+
+      const { rows: [row] } = await pool.query(
+        `INSERT INTO company_shared_files
+           (id, company_id, title, description, filename, s3_key, size_bytes,
+            content_type, published_by, scan_state, scan_backend, scanned_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+         RETURNING *`,
+        [
+          sharedFileId, company.id, title.trim(), description?.trim() || null,
+          stored.filename, stored.key, stored.size,
+          stored.contentType || 'application/octet-stream',
+          req.user.sub, stored.verdict.state, stored.verdict.backend,
+        ]
+      );
+
+      await logAudit({
+        action: 'company_shared.published',
+        userId: req.user.sub,
+        resource: 'company_shared_file',
+        resourceId: row.id,
+        detail: {
+          companyId: company.id,
+          title: row.title,
+          filename: row.filename,
+          size: Number(row.size_bytes),
+          scanState: row.scan_state,
+          scanBackend: row.scan_backend,
+        },
+        ip: req.ip,
+      });
+
+      // No email. Notifying the company that a document is waiting is Phase 1b.
+      res.status(201).json({
+        ...adminSharedView({ ...row, published_by_name: req.user.name }),
+        message: 'Document published. No email has been sent, so tell the company it is there.',
+      });
+    } catch (err) {
+      console.error('[companies] Publish shared file error:', err);
+      cleanupSharedStaging(req.file.destination);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+/**
+ * GET /companies/:id/shared-files — everything ever published to this company,
+ * withdrawn rows included. The Taranis side sees the whole history; the company
+ * sees only what is live.
+ */
+router.get('/:id/shared-files', requireCompanyAccess(), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT s.*, p.display_name AS published_by_name, w.display_name AS withdrawn_by_name
+       FROM company_shared_files s
+       JOIN users p ON p.id = s.published_by
+       LEFT JOIN users w ON w.id = s.withdrawn_by
+       WHERE s.company_id = $1
+       ORDER BY s.published_at DESC`,
+      [req.params.id]
+    );
+    res.json(rows.map(adminSharedView));
+  } catch (err) {
+    console.error('[companies] Shared files list error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * POST /companies/:id/shared-files/:sharedId/withdraw
+ *
+ * SOFT, ALWAYS. The row stays, the S3 object stays, the audit trail stays; only
+ * the company's view of it goes. There is deliberately no hard delete and no
+ * un-withdraw: reinstating means publishing the document again, so the second
+ * publication carries its own timestamp and actor rather than quietly reviving
+ * the first.
+ */
+router.post(
+  '/:id/shared-files/:sharedId/withdraw',
+  requireCompanyAccess({ write: true }),
+  async (req, res) => {
+    const { reason } = req.body || {};
+
+    try {
+      const { rows: [row] } = await pool.query(
+        `UPDATE company_shared_files
+         SET withdrawn_at = NOW(), withdrawn_by = $3, withdrawn_reason = $4
+         WHERE id = $1 AND company_id = $2 AND withdrawn_at IS NULL
+         RETURNING *`,
+        [req.params.sharedId, req.params.id, req.user.sub, reason?.trim() || null]
+      );
+      if (!row) {
+        return res.status(404).json({
+          error: 'Document not found, or it has already been withdrawn',
+        });
+      }
+
+      await logAudit({
+        action: 'company_shared.withdrawn',
+        userId: req.user.sub,
+        resource: 'company_shared_file',
+        resourceId: row.id,
+        detail: {
+          companyId: req.params.id,
+          title: row.title,
+          filename: row.filename,
+          reason: row.withdrawn_reason,
+          // Recorded because it is the question that gets asked: had they
+          // already taken a copy before we withdrew it? The downloads are in
+          // this same log under company_shared.downloaded.
+          publishedAt: row.published_at,
+        },
+        ip: req.ip,
+      });
+
+      res.json({
+        message: 'Document withdrawn. The company can no longer see it. '
+               + 'The record of the publication and of any downloads is kept.',
+        ...adminSharedView(row),
+      });
+    } catch (err) {
+      console.error('[companies] Withdraw shared file error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+/**
+ * GET /companies/:id/shared-files/:sharedId/download
+ *
+ * Taranis reading back what was published, including after withdrawal, so the
+ * question "what exactly did they get?" is answerable from the portal rather
+ * than from somebody's Sent items.
+ */
+router.get('/:id/shared-files/:sharedId/download', requireCompanyAccess(), async (req, res) => {
+  try {
+    const { rows: [row] } = await pool.query(
+      `SELECT * FROM company_shared_files WHERE id = $1 AND company_id = $2`,
+      [req.params.sharedId, req.params.id]
+    );
+    if (!row) return res.status(404).json({ error: 'Document not found' });
+
+    const decision = downloadDecision(row.scan_state);
+    if (!decision.allowed) {
+      return res.status(409).json({
+        error: decision.reason,
+        scanState: row.scan_state,
+        scanner: getScanner().kind,
+      });
+    }
+
+    const storage = await getStorage();
+    let object;
+    try {
+      object = await storage.get(row.s3_key);
+    } catch (err) {
+      if (err instanceof StorageNotFoundError) {
+        return res.status(404).json({ error: 'File is no longer available' });
+      }
+      throw err;
+    }
+
+    await logAudit({
+      action: 'company_shared.downloaded',
+      userId: req.user.sub,
+      resource: 'company_shared_file',
+      resourceId: row.id,
+      detail: {
+        companyId: req.params.id,
+        title: row.title,
+        filename: row.filename,
+        by: 'taranis',
+        withdrawn: !!row.withdrawn_at,
+      },
+      ip: req.ip,
+    });
+
+    res.setHeader('X-Taranis-Scan-State', row.scan_state);
+    res.setHeader('Content-Type', row.content_type || 'application/octet-stream');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${contentDispositionFilename(row.filename)}"`
+    );
+    if (object.contentLength != null) res.setHeader('Content-Length', object.contentLength);
+
+    object.body.on('error', (streamErr) => {
+      console.error('[companies] Shared download stream error:', streamErr.message);
+      res.destroy(streamErr);
+    });
+    object.body.pipe(res);
+  } catch (err) {
+    console.error('[companies] Shared download error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

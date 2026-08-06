@@ -38,3 +38,10 @@ h1, h2, h3, h4, h5 {
   background: rgba(201, 168, 76, 0.3);
   color: var(--taranis-green-dark);
 }
+
+/* A withdrawn shared document stays in the admin table rather than vanishing,
+   so it is still visible that it was once published. Muted, not hidden. */
+.taranis-row-withdrawn > td {
+  background: #FAFAFA;
+  color: rgba(0, 0, 0, 0.45);
+}

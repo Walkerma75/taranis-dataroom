@@ -22,9 +22,11 @@ import path from 'path';
 import { pool } from '../db.js';
 import { requireAuth, requireCompany, requireCompanyRole } from '../middleware/auth.js';
 import { logAudit } from '../services/audit.js';
-import { getStorage, STAGING_ROOT } from '../services/storage.js';
-import { getScanner } from '../services/scanner.js';
+import { getStorage, StorageNotFoundError, STAGING_ROOT } from '../services/storage.js';
+import { getScanner, downloadDecision } from '../services/scanner.js';
 import { storeCompanyUpload, cleanupCompanyStaging } from '../services/company-files.js';
+import { companySharedView } from '../services/company-shared.js';
+import { contentDispositionFilename } from '../services/document-files.js';
 import {
   COMPANY_ALLOWED_EXTENSIONS,
   COMPANY_MAX_FILE_BYTES,
@@ -671,6 +673,116 @@ router.get('/receipts/:id', async (req, res) => {
     });
   } catch (err) {
     console.error('[company] Receipt detail error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Shared documents — what Taranis has published to this company
+//
+// STRICTLY READ-ONLY. There is no publish, no withdraw, no edit and no delete
+// on this side of the boundary, and no route below writes to
+// `company_shared_files` at all. All three company roles can list and download,
+// per code brief §3.2: a viewer who cannot upload can still need to read what
+// Taranis has sent, so there is no `requireCompanyRole` here.
+//
+// Scope is `req.company.id` from the JWT claim, as everywhere else in this file.
+// Withdrawn rows are filtered in the SQL rather than in the response shaping, so
+// a withdrawn document cannot reach the company through a shaping bug.
+// ---------------------------------------------------------------------------
+router.get('/shared-files', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT s.id, s.title, s.description, s.filename, s.size_bytes, s.content_type,
+              s.published_at, u.display_name AS published_by_name
+       FROM company_shared_files s
+       JOIN users u ON u.id = s.published_by
+       WHERE s.company_id = $1 AND s.withdrawn_at IS NULL
+       ORDER BY s.published_at DESC`,
+      [req.company.id]
+    );
+    res.json(rows.map(companySharedView));
+  } catch (err) {
+    console.error('[company] Shared documents error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /company/shared-files/:id/download
+ *
+ * The lookup is `WHERE id = $1 AND company_id = $2 AND withdrawn_at IS NULL`,
+ * so a guessed id belonging to another company, or a withdrawn document,
+ * returns the same 404 as one that does not exist. No id the caller supplies is
+ * ever used as scope.
+ *
+ * Auth is `requireAuth` + `requireCompany()` at the router mount and nothing
+ * else: this route does not re-implement any part of it, so the MFA check, the
+ * role check, the membership re-read and the company-status check all apply
+ * here exactly as they do to every other route in this file. That includes the
+ * `?token=` query form, which `readBearer` folds into the Authorization header
+ * before `requireAuth` runs, rather than being a second auth path.
+ */
+router.get('/shared-files/:id/download', async (req, res) => {
+  try {
+    const { rows: [row] } = await pool.query(
+      `SELECT * FROM company_shared_files
+       WHERE id = $1 AND company_id = $2 AND withdrawn_at IS NULL`,
+      [req.params.id, req.company.id]
+    );
+    if (!row) return res.status(404).json({ error: 'Document not found' });
+
+    // The same rule as every other download on the platform, from the same
+    // function: infected is never served, clean always is, and unscanned is
+    // served only while no scanner is configured. See services/company-shared.js
+    // for why Taranis-originated files go through it at all.
+    const decision = downloadDecision(row.scan_state);
+    if (!decision.allowed) {
+      return res.status(409).json({
+        error: 'This document is not available at the moment. Please contact Taranis.',
+      });
+    }
+
+    const storage = await getStorage();
+    let object;
+    try {
+      object = await storage.get(row.s3_key);
+    } catch (err) {
+      if (err instanceof StorageNotFoundError) {
+        return res.status(404).json({ error: 'This document is no longer available' });
+      }
+      throw err;
+    }
+
+    await logAudit({
+      action: 'company_shared.downloaded',
+      userId: req.user.sub,
+      resource: 'company_shared_file',
+      resourceId: row.id,
+      detail: {
+        companyId: req.company.id,
+        title: row.title,
+        filename: row.filename,
+        by: 'company',
+      },
+      ip: req.ip,
+    });
+
+    res.setHeader('X-Taranis-Scan-State', row.scan_state);
+    res.setHeader('Content-Type', row.content_type || 'application/octet-stream');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${contentDispositionFilename(row.filename)}"`
+    );
+    if (object.contentLength != null) res.setHeader('Content-Length', object.contentLength);
+
+    object.body.on('error', (streamErr) => {
+      console.error('[company] Shared download stream error:', streamErr.message);
+      res.destroy(streamErr);
+    });
+    object.body.pipe(res);
+  } catch (err) {
+    console.error('[company] Shared download error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

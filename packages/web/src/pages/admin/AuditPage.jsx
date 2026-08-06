@@ -45,6 +45,12 @@ const actionColours = {
   'company_file.status_changed': 'gold',
   'company_file.downloaded': 'cyan',
   'company_batch.submitted': 'green',
+  // Taranis to company. 'published' rather than the code brief's
+  // 'company_shared.uploaded': "uploaded" already means company to Taranis
+  // everywhere else in this list, and the direction is the whole point.
+  'company_shared.published': 'purple',
+  'company_shared.downloaded': 'cyan',
+  'company_shared.withdrawn': 'orange',
 };
 
 export default function AuditPage() {

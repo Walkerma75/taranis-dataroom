@@ -21,6 +21,9 @@
  *   5. a deactivated or unapproved membership is blocked, immediately, without
  *      waiting for the access token to expire
  *   6. a company user who has not enrolled in TOTP reaches nothing
+ *   7. shared documents published by Taranis are readable by the one company
+ *      they were published to, by every role in it, and by nobody else; and the
+ *      company side of that feature can only read
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -154,7 +157,10 @@ test('investor, advisor and viewer tokens are refused by every /company/* route'
 
   for (const role of ['investor', 'advisor', 'viewer']) {
     const token = tokenFor({ role, sub: `user-${role}` });
-    for (const path of ['/company/workspace', '/company/staged', '/company/receipts', '/company/team']) {
+    for (const path of [
+      '/company/workspace', '/company/staged', '/company/receipts', '/company/team',
+      '/company/shared-files', '/company/shared-files/any-id/download',
+    ]) {
       const res = await server.request(path, { token });
       assert.equal(res.status, 403, `${role} should not reach ${path}`);
     }
@@ -260,7 +266,10 @@ test('every company-portal read is scoped by the company id from the token', asy
 
   const token = tokenFor({ role: 'company', companyId: COMPANY_A });
 
-  for (const path of ['/company/workspace', '/company/staged', '/company/receipts', '/company/team']) {
+  for (const path of [
+    '/company/workspace', '/company/staged', '/company/receipts', '/company/team',
+    '/company/shared-files',
+  ]) {
     pool.calls.length = 0;
     const res = await server.request(path, { token });
     assert.equal(res.status, 200, `${path} should succeed for its own company`);
@@ -491,7 +500,218 @@ test('an mfaPending token is refused on the ?token= download path', async (t) =>
 });
 
 // ---------------------------------------------------------------------------
-// 9. Unauthenticated and malformed
+// 9. Shared documents, Taranis to company
+//
+// This is the only feature on the platform that sends bytes OUT to a
+// counterparty, so its isolation is tested with the same weight as the inbound
+// path rather than as a footnote to it.
+// ---------------------------------------------------------------------------
+
+const SHARED_IN_B = '44444444-4444-4444-8444-444444444444';
+
+test('a company user cannot download another company shared document by guessing its id', async (t) => {
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    // Scoped lookup, so a real row in company B returns nothing for company A.
+    ['FROM company_shared_files', []],
+  ]);
+  const server = await startTestServer(COMPANY_MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company/shared-files/${SHARED_IN_B}/download`, {
+    token: tokenFor({ role: 'company', companyId: COMPANY_A }),
+  });
+  assert.equal(res.status, 404);
+
+  const lookup = pool.calls.find((c) => c.text.includes('FROM company_shared_files'));
+  assert.ok(lookup, 'the shared document lookup should have run');
+  // The scope came from the token, never from the path.
+  assert.equal(lookup.params[1], COMPANY_A);
+  assert.notEqual(lookup.params[1], COMPANY_B);
+  // And a withdrawn row is excluded in the SQL, not in the response shaping.
+  assert.match(lookup.text, /withdrawn_at IS NULL/);
+});
+
+test('the company shared-documents list is filtered to live rows for one company', async (t) => {
+  const pool = fakePool([membershipHandler(membershipRow({ companyId: COMPANY_A }))]);
+  const server = await startTestServer(COMPANY_MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/shared-files', {
+    token: tokenFor({ role: 'company', companyId: COMPANY_A }),
+  });
+  assert.equal(res.status, 200);
+
+  const list = pool.calls.find((c) => c.text.includes('FROM company_shared_files'));
+  assert.ok(list.params.includes(COMPANY_A));
+  assert.match(list.text, /withdrawn_at IS NULL/);
+});
+
+test('every company role can read shared documents, including a viewer', async (t) => {
+  // Code brief §3.2: "Download Taranis Shared documents" is a capability of all
+  // three company roles. A viewer who cannot upload can still need to read what
+  // Taranis has sent them.
+  for (const companyRole of ['company_admin', 'company_contributor', 'company_viewer']) {
+    const pool = fakePool([
+      membershipHandler(membershipRow({ companyId: COMPANY_A, companyRole })),
+    ]);
+    const server = await startTestServer(COMPANY_MOUNTS, pool);
+
+    const res = await server.request('/company/shared-files', {
+      token: tokenFor({ role: 'company', companyId: COMPANY_A }),
+    });
+    assert.equal(res.status, 200, `${companyRole} should be able to list shared documents`);
+
+    await server.close();
+  }
+});
+
+test('the company side of shared documents is read-only: there is no way in to publish or withdraw', async (t) => {
+  const pool = fakePool([membershipHandler(membershipRow({ companyId: COMPANY_A }))]);
+  const server = await startTestServer(COMPANY_MOUNTS, pool);
+  t.after(() => server.close());
+
+  // A company_admin, the most capable company role there is.
+  const token = tokenFor({ role: 'company', companyId: COMPANY_A });
+
+  const attempts = [
+    ['POST', '/company/shared-files'],
+    ['POST', `/company/shared-files/${SHARED_IN_B}/withdraw`],
+    ['PATCH', `/company/shared-files/${SHARED_IN_B}`],
+    ['DELETE', `/company/shared-files/${SHARED_IN_B}`],
+  ];
+
+  for (const [method, path] of attempts) {
+    const res = await server.request(path, { method, token, body: { title: 'x' } });
+    assert.equal(res.status, 404, `${method} ${path} should not exist on the company side`);
+  }
+
+  // Not one of those attempts wrote anything.
+  const writes = pool.calls.filter((c) => /INSERT INTO company_shared_files|UPDATE company_shared_files|DELETE FROM company_shared_files/.test(c.text));
+  assert.equal(writes.length, 0, 'no company request may write to company_shared_files');
+});
+
+test('a company token cannot reach the Taranis-side shared-document routes', async (t) => {
+  const pool = fakePool([membershipHandler(membershipRow({ companyId: COMPANY_A }))]);
+  const server = await startTestServer(COMPANY_MOUNTS, pool);
+  t.after(() => server.close());
+
+  const token = tokenFor({ role: 'company', companyId: COMPANY_A });
+
+  // Not even for its own company. `/companies/*` carries the withdrawal record
+  // and the full publication history, neither of which is the company's.
+  const attempts = [
+    ['GET', `/companies/${COMPANY_A}/shared-files`],
+    ['POST', `/companies/${COMPANY_A}/shared-files`],
+    ['POST', `/companies/${COMPANY_A}/shared-files/${SHARED_IN_B}/withdraw`],
+    ['GET', `/companies/${COMPANY_A}/shared-files/${SHARED_IN_B}/download`],
+    ['GET', `/companies/${COMPANY_B}/shared-files`],
+  ];
+
+  for (const [method, path] of attempts) {
+    const res = await server.request(path, { method, token });
+    assert.equal(res.status, 403, `${method} ${path} should refuse a company token`);
+  }
+  assert.equal(pool.calls.length, 0, 'refused at the mount, before any query ran');
+});
+
+test('a pending, suspended or offboarded company sees no shared documents', async (t) => {
+  for (const status of ['pending', 'suspended', 'offboarded']) {
+    const pool = fakePool([
+      membershipHandler(membershipRow({ companyId: COMPANY_A, companyStatus: status })),
+    ]);
+    const server = await startTestServer(COMPANY_MOUNTS, pool);
+
+    for (const path of ['/company/shared-files', `/company/shared-files/${SHARED_IN_B}/download`]) {
+      const res = await server.request(path, {
+        token: tokenFor({ role: 'company', companyId: COMPANY_A }),
+      });
+      assert.equal(res.status, 403, `a ${status} company should be blocked from ${path}`);
+    }
+
+    // Only the membership lookups ran. Neither handler was reached.
+    assert.ok(pool.calls.every((c) => c.text.includes('FROM company_users cu')));
+
+    await server.close();
+  }
+});
+
+test('a mfaPending company token reaches no shared document, by header or by ?token=', async (t) => {
+  // The download is a link a browser may open in a new tab, so it is the one
+  // place a route could be tempted to read the token itself and skip the
+  // guards. It does not: `readBearer` folds ?token= into the Authorization
+  // header before requireAuth runs, so the MFA check applies to both forms.
+  const pool = fakePool([membershipHandler(membershipRow({ companyId: COMPANY_A }))]);
+  const server = await startTestServer(COMPANY_MOUNTS, pool);
+  t.after(() => server.close());
+
+  const token = tokenFor({ role: 'company', companyId: COMPANY_A, mfaPending: true });
+
+  const viaHeader = await server.request(`/company/shared-files/${SHARED_IN_B}/download`, { token });
+  assert.equal(viaHeader.status, 403);
+  assert.equal(viaHeader.body.mfaEnrolmentRequired, true);
+
+  const viaQuery = await server.request(`/company/shared-files/${SHARED_IN_B}/download?token=${token}`);
+  assert.equal(viaQuery.status, 403);
+  assert.equal(viaQuery.body.mfaEnrolmentRequired, true);
+
+  assert.equal(pool.calls.length, 0, 'nothing should have been queried');
+});
+
+test('the ?token= form of the shared download is scoped by the claim, not by the path', async (t) => {
+  // A valid token opened in a new tab still resolves its company from the
+  // claim. There is no query parameter that changes which company is read.
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['FROM company_shared_files', []],
+  ]);
+  const server = await startTestServer(COMPANY_MOUNTS, pool);
+  t.after(() => server.close());
+
+  const token = tokenFor({ role: 'company', companyId: COMPANY_A });
+  const res = await server.request(
+    `/company/shared-files/${SHARED_IN_B}/download?token=${token}&companyId=${COMPANY_B}`
+  );
+  assert.equal(res.status, 404);
+
+  const lookup = pool.calls.find((c) => c.text.includes('FROM company_shared_files'));
+  assert.equal(lookup.params[1], COMPANY_A);
+});
+
+test('a readonly Taranis reviewer can read shared documents but cannot publish or withdraw', async (t) => {
+  const pool = fakePool([
+    reviewerHandler('readonly'),
+    ['JOIN users p ON p.id = s.published_by', []],
+  ]);
+  const server = await startTestServer(COMPANY_MOUNTS, pool);
+  t.after(() => server.close());
+
+  const token = tokenFor({ role: 'advisor', sub: 'advisor-1' });
+
+  const read = await server.request(`/companies/${COMPANY_A}/shared-files`, { token });
+  assert.equal(read.status, 200);
+
+  const withdraw = await server.request(
+    `/companies/${COMPANY_A}/shared-files/${SHARED_IN_B}/withdraw`,
+    { method: 'POST', token, body: {} }
+  );
+  assert.equal(withdraw.status, 403);
+  assert.match(withdraw.body.error, /read-only/);
+});
+
+test('a Taranis user with no assignment to a company gets 404 on its shared documents', async (t) => {
+  const pool = fakePool([reviewerHandler(null)]);
+  const server = await startTestServer(COMPANY_MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/shared-files`, {
+    token: tokenFor({ role: 'advisor', sub: 'advisor-1' }),
+  });
+  assert.equal(res.status, 404);
+});
+
+// ---------------------------------------------------------------------------
+// 10. Unauthenticated and malformed
 // ---------------------------------------------------------------------------
 
 test('no token reaches nothing, on either side', async (t) => {
