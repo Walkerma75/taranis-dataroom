@@ -7,6 +7,8 @@ import {
   FileTextOutlined,
   AuditOutlined,
   BellOutlined,
+  SolutionOutlined,
+  InboxOutlined,
   SettingOutlined,
   LogoutOutlined,
   SafetyCertificateOutlined,
@@ -38,6 +40,11 @@ export default function AppLayout() {
   const canManageFunds = hasCap(user, 'canManageFunds');
   const canViewAudit = hasCap(user, 'canViewAudit');
 
+  // Due diligence is for the deal side. Investors never see it; an advisor or
+  // viewer may hold a named assignment to one company, and the API scopes both
+  // pages to whatever they are assigned to (an empty list if nothing).
+  const seesDueDiligence = ['admin', 'advisor', 'viewer'].includes(user?.role);
+
   const menuItems = [
     {
       key: '/dashboard',
@@ -49,6 +56,22 @@ export default function AppLayout() {
       icon: <FileTextOutlined />,
       label: 'Documents',
     },
+    // Due diligence portal
+    ...(seesDueDiligence
+      ? [
+          { type: 'divider' },
+          {
+            key: '/admin/companies',
+            icon: <SolutionOutlined />,
+            label: 'Due Diligence',
+          },
+          {
+            key: '/admin/review-queue',
+            icon: <InboxOutlined />,
+            label: 'Review Queue',
+          },
+        ]
+      : []),
     // Admin/capability-gated items
     ...((canManageUsers || canManageFunds || canViewAudit)
       ? [{ type: 'divider' }]

@@ -3,11 +3,11 @@
  */
 import { Router } from 'express';
 import { pool } from '../db.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, rejectCompanyRole } from '../middleware/auth.js';
 import { logAudit } from '../services/audit.js';
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, rejectCompanyRole);
 
 // GET /funds — all users can see funds they have grants for; admins see all
 router.get('/', async (req, res) => {

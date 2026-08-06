@@ -338,7 +338,7 @@ Database is a **full** section for Tier 3 — regulated, audit-trigger-protected
 ### Schema and migrations
 
 - **Migration tool:** custom `packages/api/src/db/migrate.js` (plus startup-time `autoMigrate()` in `packages/api/src/index.js` which applies pending `.sql` files in order and tracks them in a `_migrations` table).
-- **Head migration:** `008_password_resets.sql`.
+- **Head migration:** `013_company_files_and_submissions.sql`.
 - **Full migration list:**
   1. `001_users_and_auth.sql` — users, MFA secrets, refresh tokens, invites.
   2. `002_funds_and_documents.sql` — funds, document_categories (seeded nine at creation — Overview, PPM, LPA, Subscription Docs, Financials, Technical, Legal, Correspondence, Pitch Deck), documents.
@@ -348,6 +348,12 @@ Database is a **full** section for Tier 3 — regulated, audit-trigger-protected
   6. `006_rename_categories.sql` — rename PPM → Private Placement Memorandum, LPA → Legal Documents (merging old Legal + Subscription Docs), Pitch Deck → Pitch Deck / Presentation. Final seven categories today.
   7. `007_capabilities_and_merge_roles.sql` — per-user `capabilities` JSONB column; Consultant role merged into Advisor; four roles post-migration (Admin, Investor, Advisor, Viewer).
   8. `008_password_resets.sql` — password-reset-token table.
+  9. `009_archive_pre_s3_documents.sql` — DD portal Phase 0, 2026-08-05. Sets `status = 'archived'` on every `documents` row created before the S3 cutover (their bytes were lost to ephemeral container storage), and records the affected ids in `s3_cutover_archived_documents` so the change reverses with one UPDATE. No deletions, so `audit_log` entries still resolve.
+  10. `010_company_role_enum.sql` — DD portal Phase 1a. Adds `company` to the `user_role` enum and does nothing else. **It is on its own deliberately:** `autoMigrate()` wraps each file in BEGIN/COMMIT, and PostgreSQL will not let a newly added enum value be USED in the transaction that added it. No migration inserts a row with role `company`; company users are created at runtime.
+  11. `011_companies.sql` — `companies` (with the two activation gates `nda_executed_at` and `iems_screened_at`, plus the Q1 three-point NDA check), `company_users` membership records, `company_reviewers` named Taranis-side assignments. Enums `company_status`, `company_role`.
+  12. `012_irl_templates_and_items.sql` — `irl_templates`, `irl_template_items`, `company_irl_items`. Enums `irl_priority`, `irl_item_state`. `ref` is unique per template and per company and is a **permanent identifier the company quotes back in correspondence — never renumber it.**
+  13. `013_company_files_and_submissions.sql` — `submission_batches`, `company_files`, `file_status_history`, and the `company_receipt_ref_seq` sequence behind the `TRN-DD-{YYYY}-{NNNNNN}` receipt reference. Carries a CHECK that an `attention_needed` history row must have a note.
+- **Migrations 010 to 013 verification, 2026-08-06:** applied in order to a throwaway PostgreSQL 16 container the same way `autoMigrate()` does (one file, one transaction, abort on first failure), then force-re-run twice to prove idempotency. The constraints were then exercised with real inserts: empty description refused, `attention_needed` with no note refused, second Primary Contact refused, duplicate `(company_id, ref)` refused. The whole Phase 1a flow was then driven end to end against the same container through the running API.
 - **Seed:** `packages/api/src/db/seed.js` — admin user only, requires `SEED_ADMIN_PASSWORD` env var, never overwrites an existing admin (`ON CONFLICT DO NOTHING`). No funds, no document categories (those come from migration 002). Rewritten on 2026-04-21 as part of the secret-exposure remediation.
 
 ### Backups
@@ -438,6 +444,20 @@ Things that only live in Mark's head (or in scattered chat / spec notes), captur
 ## 12. Known risks / open items
 
 Live risks, in rough order of severity. Every item has a TASKS.md ticket.
+
+- **ACCEPTED RISK, NOT A DEFECT: company uploads are not virus-scanned. The DD portal ships with a STUB scanner.** Code brief §8 and §12 require a decision on ClamAV versus S3 malware protection; this records the decision, the gap, and the scope of the acceptance.
+
+  **Decided and accepted by Mark, 2026-08-06** (HANDOVER-C004 §3.1, ANSWERED). Option A confirmed, and the exposure accepted for the beta: a small number of clients have been told that uploads in Phase 1a are not scanned and are content to use the portal on that basis. **Do not re-raise this as a blocker.** The limits of the acceptance are: it covers the beta cohort only, not unscanned uploads in general; the residual exposure is that a company could upload a malicious file which a Taranis reviewer later opens; company-to-company exposure is prevented by the isolation model, and the extension allow-list and size cap still apply. **The trigger to revisit is widening the cohort beyond clients who have accepted the position, not a date.**
+
+  **What ships.** `packages/api/src/services/scanner.js` is an injectable interface built on the same pattern as `storage.js`, with two backends: `StubScanner`, which is what runs, and `ClamAvScanner`, which is deliberately unimplemented and throws. The stub inspects nothing and **never returns `clean`** — it returns `pending`. That matters: recording `clean` would put a false claim of inspection in the database for ever, whereas `pending` plus `company_files.scan_backend = 'stub'` says exactly which files were never examined, so they can be found and re-scanned once a real engine is wired.
+
+  **Download rule** (`downloadDecision` in the same file). An `infected` file is never served, under any backend. A `clean` file always is. A `pending` or `error` file is served **only while no scanner is configured**, which is the accepted position above — refusing it would make the portal unusable, since no reviewer could open anything a company submitted. The response carries `X-Taranis-Scan-State` and the audit row records `unscanned: true`, so it is answerable later exactly which files were served uninspected. As soon as a real backend is configured the rule tightens on its own, because `pending` then means scanning has not finished rather than that nobody is scanning.
+
+  **Why the stub rather than ClamAV** (HANDOVER-C004 §3.1, overriding HANDOVER-CW004 §3 item 2). Task definition `taranis-dataroom:8` is **1024 CPU / 2048 MiB for the whole task**, shared between the api and web containers with no per-container reservations, and already running Node 20 and LibreOffice. `clamd` holds its full signature database resident and commonly needs 2 to 3 GB on its own. On a 2 GB task the realistic outcome is Fargate killing the task on memory — a service-down risk that would surface on deploy rather than in any test. One-shot `clamscan` avoids the resident memory but reloads the signature database per invocation, which is tens of seconds on a user-facing upload.
+
+  **It is visible, not silent.** Startup logs a warning on every boot, and `GET /health` reports `"scanner":"stub"` alongside `"storage"`. A task running unprotected shows it.
+
+  **What closes it.** Either resize the task to at least 4096 MiB and implement `ClamAvScanner` (only the backend changes, no call site moves), or enable GuardDuty Malware Protection for S3. Both need a console action from Mark. **Not a regression either** — uploads on this platform have never been scanned.
 
 - **Object Lock is OFF on `taranis-dataroom-documents-prod`** — DFSA retention gap. Object Lock is irreversible once enabled, so the fix requires an explicit decision on retention mode (Compliance vs Governance) and retention window (presumably 8 years to match the audit-log commitment). TASKS.md #1, Tier 1, deadline 2026-05-15.
 - **RDS storage not encrypted at rest.** `storageEncrypted: false`, `kmsKeyId: null` — all seven visible snapshots likewise unencrypted. Fixing requires snapshot → restore to an encrypted instance → cutover. TASKS.md #8, Tier 2.

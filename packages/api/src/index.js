@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import argon2 from 'argon2';
 import { pool, testConnection } from './db.js';
 import { getStorage } from './services/storage.js';
+import { getScanner } from './services/scanner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,6 +20,12 @@ import documentRoutes from './routes/documents.js';
 import grantRoutes from './routes/grants.js';
 import auditRoutes from './routes/audit.js';
 import noticeRoutes from './routes/notices.js';
+import companyRoutes, {
+  reviewQueueRouter,
+  companyFilesRouter,
+  irlTemplatesRouter,
+} from './routes/companies.js';
+import companyPortalRoutes from './routes/company-portal.js';
 
 const app = express();
 const PORT = process.env.API_PORT || 4000;
@@ -48,12 +55,17 @@ app.get('/health', async (_req, res) => {
   try {
     const result = await pool.query('SELECT NOW() AS server_time');
     const storage = await getStorage();
+    const scanner = getScanner();
     res.json({
       status: 'ok',
       service: 'taranis-dataroom-api',
       database: 'connected',
-      // Backend kind only — never the bucket name, this endpoint is public.
+      // Backend kinds only — never the bucket name or a host, this endpoint is
+      // public. `scanner: "stub"` means company uploads are NOT being scanned
+      // and stay quarantined; it is reported here for the same reason storage
+      // is, so a task running without protection is visible rather than assumed.
       storage: storage.kind,
+      scanner: scanner.kind,
       serverTime: result.rows[0].server_time,
     });
   } catch (err) {
@@ -80,6 +92,15 @@ app.use('/documents', documentRoutes);
 app.use('/grants', grantRoutes);
 app.use('/audit', auditRoutes);
 app.use('/notices', noticeRoutes);
+
+// Company DD portal. `/company/*` is the counterparty's own workspace and is
+// the only mount that accepts role 'company'; everything else above and below
+// rejects it explicitly.
+app.use('/company', companyPortalRoutes);
+app.use('/companies', companyRoutes);
+app.use('/company-files', companyFilesRouter);
+app.use('/review-queue', reviewQueueRouter);
+app.use('/irl-templates', irlTemplatesRouter);
 
 // ---------------------------------------------------------------------------
 // Error handler
@@ -210,6 +231,22 @@ async function autoSeed() {
     // deployment is obvious in the task logs rather than at first upload.
     const storage = await getStorage();
     console.log(`[storage] Documents backed by ${storage.describe()}`);
+
+    // Same reasoning as the storage line: a task running an unscanned upload
+    // path must be visible in the logs, never assumed. With the Phase 1a stub
+    // this prints a warning on every boot, deliberately.
+    const scanner = getScanner();
+    if (scanner.kind === 'stub') {
+      console.warn(`[scanner] ${scanner.describe()}`);
+      console.warn(
+        '[scanner] Company uploads will be accepted and served WITHOUT being ' +
+        'scanned. This is an accepted beta risk, not a defect (HANDOVER-C004 ' +
+        '§3.1), and the trigger to revisit it is widening the client cohort. ' +
+        'See MIGRATION-INVENTORY.md §12.'
+      );
+    } else {
+      console.log(`[scanner] Company uploads scanned by ${scanner.describe()}`);
+    }
   } catch (err) {
     console.error('[startup] Failed to initialise database:', err.message);
     process.exit(1);
