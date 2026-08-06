@@ -31,6 +31,7 @@ import WorkspacePage from './pages/company/WorkspacePage.jsx';
 import ItemDetailPage from './pages/company/ItemDetailPage.jsx';
 import StagedSubmissionPage from './pages/company/StagedSubmissionPage.jsx';
 import ReceiptsPage from './pages/company/ReceiptsPage.jsx';
+import SharedDocumentsPage from './pages/company/SharedDocumentsPage.jsx';
 import TeamPage from './pages/company/TeamPage.jsx';
 
 // Settings pages
@@ -130,6 +131,7 @@ function AppRoutes() {
         <Route path="/company/items/:itemId" element={<ItemDetailPage />} />
         <Route path="/company/staged" element={<StagedSubmissionPage />} />
         <Route path="/company/receipts" element={<ReceiptsPage />} />
+        <Route path="/company/shared" element={<SharedDocumentsPage />} />
         <Route path="/company/team" element={<TeamPage />} />
       </Route>
 

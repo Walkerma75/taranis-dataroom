@@ -4,6 +4,7 @@ import {
   CheckSquareOutlined,
   CloudUploadOutlined,
   FileProtectOutlined,
+  FolderOpenOutlined,
   TeamOutlined,
   SettingOutlined,
   LogoutOutlined,
@@ -39,6 +40,9 @@ export default function CompanyLayout() {
     { key: '/company', icon: <CheckSquareOutlined />, label: 'Information requests' },
     { key: '/company/staged', icon: <CloudUploadOutlined />, label: 'Ready to submit' },
     { key: '/company/receipts', icon: <FileProtectOutlined />, label: 'Receipts' },
+    // Every company role can read what Taranis has shared, per code brief §3.2,
+    // so this entry is not gated the way "Your team" is.
+    { key: '/company/shared', icon: <FolderOpenOutlined />, label: 'From Taranis' },
     ...(isCompanyAdmin
       ? [{ key: '/company/team', icon: <TeamOutlined />, label: 'Your team' }]
       : []),
