@@ -1,10 +1,16 @@
 import { useEffect, useState } from 'react';
 import {
   Typography, Card, Table, Button, Space, Tag, Select, Modal, Form, Input, message, Alert,
+  Tooltip,
 } from 'antd';
+import { DownloadOutlined, WarningOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../../api/client.js';
-import { formatBytes, formatUtc } from '../company/irlDisplay.js';
+import { api, apiFetch } from '../../api/client.js';
+import {
+  UNSCANNED_WARNING, UNSCANNED_WARNING_DETAIL, isUnscanned,
+  scanLabel, scanColour, scanBackendHint,
+  formatBytes, formatUtc,
+} from '../company/irlDisplay.js';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -22,6 +28,7 @@ export default function ReviewQueuePage() {
   const [fundId, setFundId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [statusFile, setStatusFile] = useState(null);
+  const [downloadingFile, setDownloadingFile] = useState(null);
   const [form] = Form.useForm();
 
   const load = async () => {
@@ -56,6 +63,32 @@ export default function ReviewQueuePage() {
     }
   };
 
+  /**
+   * Open a queued file. Same endpoint and same server-published decision as the
+   * company Files tab: this is the screen a reviewer takes the status decision
+   * on, so it has to be the screen they can read the document from.
+   */
+  const downloadFile = async (file) => {
+    setDownloadingFile(file.id);
+    try {
+      const res = await apiFetch(`/company-files/${file.id}/download`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || 'This file could not be downloaded.');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      message.error(err.message);
+    }
+    setDownloadingFile(null);
+  };
+
   const columns = [
     {
       title: 'Company',
@@ -83,13 +116,40 @@ export default function ReviewQueuePage() {
     },
     { title: 'Submitted', dataIndex: 'submittedAt', width: 170, render: formatUtc },
     {
+      title: 'Scan',
+      dataIndex: 'scanState',
+      width: 110,
+      // Carried here as well as on the Files tab so the download button being
+      // disabled is explicable on the row rather than only in its tooltip.
+      render: (s, row) => (
+        <Tooltip title={scanBackendHint(row)}>
+          <Tag color={scanColour(s)} style={{ color: '#fff', borderColor: 'transparent' }}>
+            {scanLabel(s)}
+          </Tag>
+        </Tooltip>
+      ),
+    },
+    {
       title: '',
       key: 'actions',
-      width: 110,
+      width: 210,
       render: (_, row) => (
-        <Button size="small" onClick={() => { setStatusFile(row); form.setFieldsValue({ status: 'in_review' }); }}>
-          Set status
-        </Button>
+        <Space size={4}>
+          <Tooltip title={row.downloadBlockedReason}>
+            <Button
+              size="small"
+              icon={<DownloadOutlined />}
+              disabled={!row.downloadable}
+              loading={downloadingFile === row.id}
+              onClick={() => downloadFile(row)}
+            >
+              Download
+            </Button>
+          </Tooltip>
+          <Button size="small" onClick={() => { setStatusFile(row); form.setFieldsValue({ status: 'in_review' }); }}>
+            Set status
+          </Button>
+        </Space>
       ),
     },
   ];
@@ -110,6 +170,16 @@ export default function ReviewQueuePage() {
         description="Email notifications arrive in a later release. Until then this queue is the
           only place a new submission shows up, so it is worth checking daily."
       />
+
+      {rows.some(isUnscanned) && (
+        <Alert
+          type="warning"
+          showIcon
+          icon={<WarningOutlined />}
+          message={UNSCANNED_WARNING}
+          description={UNSCANNED_WARNING_DETAIL}
+        />
+      )}
 
       <Card
         extra={(

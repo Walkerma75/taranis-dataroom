@@ -9,7 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import companyPortalRoutes from '../src/routes/company-portal.js';
-import companyRoutes, { companyFilesRouter } from '../src/routes/companies.js';
+import companyRoutes, { companyFilesRouter, reviewQueueRouter } from '../src/routes/companies.js';
 
 import {
   fakePool,
@@ -27,6 +27,7 @@ const MOUNTS = [
   ['/company', companyPortalRoutes],
   ['/companies', companyRoutes],
   ['/company-files', companyFilesRouter],
+  ['/review-queue', reviewQueueRouter],
 ];
 
 const companyAdminToken = () => tokenFor({ role: 'company', companyId: COMPANY_A });
@@ -332,6 +333,15 @@ test('an unscanned file is served under the stub, but the response says it was n
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('x-taranis-scan-state'), 'pending');
   assert.equal(await res.text(), '%PDF-1.4 bytes');
+
+  // The audit row must record that this was served without ever being
+  // inspected, so it is answerable later exactly which files those were.
+  const audit = pool.calls.find((c) => c.text.includes('INSERT INTO audit_log'));
+  assert.ok(audit, 'the download should have been audited');
+  assert.equal(audit.params[1], 'company_file.downloaded');
+  const detail = JSON.parse(audit.params[4]);
+  assert.equal(detail.unscanned, true);
+  assert.equal(detail.scanState, 'pending');
 });
 
 test('an infected file says so rather than pretending it is merely pending', async (t) => {
@@ -347,6 +357,117 @@ test('an infected file says so rather than pretending it is merely pending', asy
   const res = await server.request(`/company-files/${FILE_1}/download`, { token: adminToken() });
   assert.equal(res.status, 409);
   assert.match(res.body.error, /quarantined/);
+});
+
+// ---------------------------------------------------------------------------
+// The listings publish the server's own download decision (HANDOVER-CW006)
+//
+// The UI must not re-derive the rule, because the rule depends on which scanner
+// backend is live and the browser cannot know that. These tests are what stops
+// the two drifting: they assert that the answer on the row is the answer
+// `downloadDecision` gives, for the same states the download route is tested at
+// directly above.
+// ---------------------------------------------------------------------------
+
+/** The joined shape `GET /companies/:id/files` selects. */
+function submittedFile(id, scanState) {
+  return {
+    id,
+    company_id: COMPANY_A,
+    filename: `${id}.pdf`,
+    description: 'A document',
+    size_bytes: 1024,
+    content_type: 'application/pdf',
+    version: 1,
+    supersedes: null,
+    status: 'received',
+    scan_state: scanState,
+    scan_backend: 'stub',
+    upload_state: 'submitted',
+    created_at: new Date(),
+  };
+}
+
+test('the company Files listing says which files can be downloaded, and why not when they cannot', async (t) => {
+  const pool = fakePool([
+    ['FROM company_files f\n       JOIN users u', [
+      submittedFile(FILE_1, 'pending'),
+      submittedFile(FILE_2, 'infected'),
+    ]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/files`, { token: adminToken() });
+  assert.equal(res.status, 200);
+
+  const [unscanned, infected] = res.body;
+
+  // Under the stub, an unscanned file is downloadable and is flagged as never
+  // having been inspected. That is the ratified beta position.
+  assert.equal(unscanned.downloadable, true);
+  assert.equal(unscanned.downloadUnscanned, true);
+  assert.equal(unscanned.downloadBlockedReason, null);
+
+  // A verdict is a verdict, under any backend.
+  assert.equal(infected.downloadable, false);
+  assert.equal(infected.downloadUnscanned, false);
+  assert.match(infected.downloadBlockedReason, /quarantined/);
+});
+
+test('the review queue publishes the same decision as the Files tab', async (t) => {
+  // Two screens, one rule. A reviewer who can open a file from the company page
+  // must be able to open it from the queue, and the reverse.
+  const pool = fakePool([
+    ['FROM company_files f\n       JOIN companies c', [
+      { ...submittedFile(FILE_1, 'pending'), legal_name: 'Example Bio' },
+      { ...submittedFile(FILE_2, 'infected'), legal_name: 'Example Bio' },
+    ]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/review-queue', { token: adminToken() });
+  assert.equal(res.status, 200);
+
+  const [unscanned, infected] = res.body;
+  assert.equal(unscanned.downloadable, true);
+  assert.equal(unscanned.downloadUnscanned, true);
+  assert.equal(infected.downloadable, false);
+  assert.match(infected.downloadBlockedReason, /quarantined/);
+});
+
+test('a clean file is downloadable and is not flagged unscanned', async (t) => {
+  const pool = fakePool([
+    ['FROM company_files f\n       JOIN users u', [submittedFile(FILE_1, 'clean')]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/files`, { token: adminToken() });
+  assert.equal(res.body[0].downloadable, true);
+  assert.equal(res.body[0].downloadUnscanned, false);
+  assert.equal(res.body[0].downloadBlockedReason, null);
+});
+
+test('the published decision follows the scanner backend, it is not hard-coded to infected', async (t) => {
+  // The regression this guards. With a real backend configured, 'pending' means
+  // scanning has not finished, and the API refuses it. If the listing kept
+  // saying downloadable the UI would offer a button the server rejects, which is
+  // exactly the client-side rule CW006 §3 item 3 forbids.
+  const { setScanner, resetScanner } = await import('../src/services/scanner.js');
+  setScanner({ kind: 'clamav', describe: () => 'ClamAV', async scan() { return { state: 'clean' }; } });
+  t.after(() => resetScanner());
+
+  const pool = fakePool([
+    ['FROM company_files f\n       JOIN users u', [submittedFile(FILE_1, 'pending')]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/files`, { token: adminToken() });
+  assert.equal(res.body[0].downloadable, false);
+  assert.match(res.body[0].downloadBlockedReason, /not yet been cleared/);
 });
 
 // ---------------------------------------------------------------------------
