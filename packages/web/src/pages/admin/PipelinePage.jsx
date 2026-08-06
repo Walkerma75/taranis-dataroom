@@ -215,8 +215,9 @@ export default function PipelinePage() {
       <div>
         <Title level={3} style={{ marginBottom: 0 }}>Due diligence pipeline</Title>
         <Paragraph type="secondary">
-          Companies under due diligence. A company cannot be activated until both the executed NDA
-          and the IEMS screening dates are recorded.
+          Every company under due diligence, and where a new one is added. A company cannot be
+          activated until both the executed NDA and the IEMS screening dates are recorded, and its
+          users are invited from its own Users tab once it exists.
         </Paragraph>
       </div>
 
@@ -245,7 +246,11 @@ export default function PipelinePage() {
           dataSource={companies}
           loading={loading}
           pagination={false}
-          locale={{ emptyText: 'No companies yet.' }}
+          locale={{
+            emptyText: isAdmin
+              ? 'No companies yet. Use Add a company to create the first one.'
+              : 'No companies yet.',
+          }}
         />
       </Card>
 

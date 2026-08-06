@@ -7,17 +7,22 @@ import {
   ArrowLeftOutlined, UserAddOutlined, CopyOutlined, WarningOutlined, DownloadOutlined,
   UploadOutlined, SendOutlined,
 } from '@ant-design/icons';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api, apiFetch } from '../../api/client.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
   STATE_LABELS, STATE_COLOURS, PRIORITY_LABELS, PRIORITY_COLOURS,
   COMPANY_ROLE_LABELS, COMPANY_STATUS_LABELS, ACCEPTED_UPLOAD_TYPES, MAX_UPLOAD_BYTES,
+  OFF_DOMAIN_COLOUR, OFF_DOMAIN_LABEL, OFF_DOMAIN_WARNING, OFF_DOMAIN_WARNING_DETAIL,
+  isOffDomain, isPendingNomination,
   formatBytes, formatUtc,
 } from '../company/irlDisplay.js';
 
 const { Title, Text, Paragraph } = Typography;
+
+/** Tabs that can be linked to directly, for example from the admin Users page. */
+const TAB_KEYS = ['checklist', 'files', 'users', 'shared', 'settings'];
 
 /**
  * One company, Taranis side.
@@ -29,8 +34,15 @@ const { Title, Text, Paragraph } = Typography;
 export default function CompanyDetailPage() {
   const { companyId } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
+
+  // Which tab is open is in the URL, so a link can land on it. An unknown or
+  // missing value falls back to the checklist, which is what the page opened on
+  // before this existed.
+  const requestedTab = searchParams.get('tab');
+  const activeTab = TAB_KEYS.includes(requestedTab) ? requestedTab : 'checklist';
 
   const [company, setCompany] = useState(null);
   const [items, setItems] = useState([]);
@@ -377,12 +389,12 @@ export default function CompanyDetailPage() {
   // -------------------------------------------------------------------- Users
   const usersTab = (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      {members.some((m) => m.domainMatched === false && !m.approved) && (
+      {members.some((m) => isOffDomain(m) && isPendingNomination(m)) && (
         <Alert
           type="warning"
           showIcon
-          message="A nomination is on an unrecognised email domain"
-          description="Check who this person is before approving the nomination."
+          message={OFF_DOMAIN_WARNING}
+          description={OFF_DOMAIN_WARNING_DETAIL}
         />
       )}
       <Table
@@ -398,7 +410,7 @@ export default function CompanyDetailPage() {
               <Space>
                 <Text>{name}</Text>
                 {row.isPrimary && <Tag color="#2C3E35">Primary contact</Tag>}
-                {row.domainMatched === false && <Tag color="#C9A84C">Off-domain</Tag>}
+                {isOffDomain(row) && <Tag color={OFF_DOMAIN_COLOUR}>{OFF_DOMAIN_LABEL}</Tag>}
               </Space>
             ),
           },
@@ -745,6 +757,8 @@ export default function CompanyDetailPage() {
         )}
       >
         <Tabs
+          activeKey={activeTab}
+          onChange={(key) => setSearchParams(key === 'checklist' ? {} : { tab: key }, { replace: true })}
           items={[
             { key: 'checklist', label: `Checklist (${items.length})`, children: checklistTab },
             { key: 'files', label: `Files (${files.length})`, children: filesTab },
