@@ -324,6 +324,18 @@ router.post(
         return res.status(404).json({ error: 'File not found' });
       }
 
+      // A version that has already been overtaken is not the one to replace.
+      // The item page hides the button on those rows, but the rule belongs here:
+      // a version chain that forks produces two files both numbered N+1, and a
+      // UI-only rule is a courtesy, not a constraint.
+      if (previous.status === 'superseded') {
+        cleanupCompanyStaging(req.file.destination);
+        return res.status(409).json({
+          error: 'This version has already been replaced. '
+               + 'Upload the newer version of it instead.',
+        });
+      }
+
       const fileId = crypto.randomUUID();
       const storage = await getStorage();
       const scanner = getScanner();
@@ -557,13 +569,84 @@ router.post('/submit', requireCompanyRole('company_admin'), async (req, res) => 
       );
     }
 
+    // Retire the versions these files replace.
+    //
+    // At submission and not at upload, because a staged replacement is not a
+    // submission: the company can still withdraw it, and retiring the old
+    // version at upload would clear a reviewer's flag on the strength of a file
+    // nobody has sent yet.
+    //
+    // Only a SUBMITTED predecessor is retired. A staged one is left alone and
+    // stays in the staged list, which is a known rough edge rather than an
+    // oversight (HANDOVER-CW010 §3, out of scope).
+    //
+    // Note what this means and say it plainly: a company action can clear a
+    // reviewer's 'attention_needed'. That is intended. The replacement enters at
+    // 'received', so the item derives back to 'received' and returns to the
+    // review queue rather than jumping to 'completed' — no reviewer decision is
+    // erased, the request is simply put back in front of them against the file
+    // that now answers it.
+    const retired = [];
+    for (const f of files.filter((r) => r.supersedes)) {
+      // Read first, then update. An UPDATE ... RETURNING would hand back the new
+      // status, and the status being left behind is the one worth recording.
+      const { rows: [previous] } = await client.query(
+        `SELECT id, irl_item_id, filename, status FROM company_files
+          WHERE id = $1 AND company_id = $2
+            AND upload_state = 'submitted'
+            AND status <> 'superseded'
+            AND deleted_at IS NULL
+          FOR UPDATE`,
+        [f.supersedes, req.company.id]
+      );
+      if (!previous) continue;
+
+      await client.query(
+        `UPDATE company_files SET status = 'superseded' WHERE id = $1`,
+        [previous.id]
+      );
+      await client.query(
+        `INSERT INTO file_status_history (file_id, status, note, set_by)
+         VALUES ($1, 'superseded', $2, $3)`,
+        [previous.id, `Replaced by version ${f.version}: ${f.filename}`, req.user.sub]
+      );
+      retired.push({ ...previous, replacedBy: f.id, replacedByVersion: f.version });
+    }
+
     await client.query('COMMIT');
 
     // Item states are derived outside the transaction: they are a projection of
     // what was just committed, and a failure here must not undo a submission
     // the company has already been told about.
-    const itemIds = [...new Set(files.map((f) => f.irl_item_id).filter(Boolean))];
+    //
+    // The retired files' items are folded in as well. In practice `/replace`
+    // copies the predecessor's item onto the new version so these are the same
+    // ids, but deriving the set from what actually changed beats relying on that
+    // staying true.
+    const itemIds = [...new Set(
+      [...files, ...retired].map((f) => f.irl_item_id).filter(Boolean)
+    )];
     for (const itemId of itemIds) await recomputeItemState(itemId);
+
+    // Every status change lands in audit_log as well as in file_status_history
+    // (migration 013). This one is made by the system on the company's behalf
+    // rather than by a reviewer, which is a reason to record it, not to skip it.
+    for (const r of retired) {
+      await logAudit({
+        action: 'company_file.superseded',
+        userId: req.user.sub,
+        resource: 'company_file',
+        resourceId: r.id,
+        detail: {
+          companyId: req.company.id,
+          from: r.status,
+          replacedBy: r.replacedBy,
+          version: r.replacedByVersion,
+          receiptRef,
+        },
+        ip: req.ip,
+      });
+    }
 
     await logAudit({
       action: 'company_batch.submitted',

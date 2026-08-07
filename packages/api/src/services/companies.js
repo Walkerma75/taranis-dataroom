@@ -124,6 +124,17 @@ export function companySafeItem(item) {
 // ---------------------------------------------------------------------------
 
 /**
+ * The states that describe what Taranis holds independently of any submission,
+ * and so the only ones an item may fall back to. The rest are a projection of
+ * the files and are derived, never stored as a baseline.
+ */
+export const BASELINE_STATES = ['outstanding', 'partially_held', 'held'];
+
+export function isBaselineState(state) {
+  return BASELINE_STATES.includes(state);
+}
+
+/**
  * Derive a checklist item's state from the files submitted against it, per the
  * code brief §4 rules, in this precedence:
  *
@@ -131,17 +142,29 @@ export function companySafeItem(item) {
  *   2. at least one file, all 'completed'   -> completed
  *   3. any file 'in_review'                 -> in_review
  *   4. any submitted file                   -> received
- *   5. otherwise                            -> the seeded state, unchanged
+ *   5. otherwise                            -> the baseline state, unchanged
  *
- * Seeded states ('held', 'partially_held', 'outstanding') and an explicit
+ * Baseline states ('held', 'partially_held', 'outstanding') and an explicit
  * 'not_applicable' therefore survive until a file actually arrives.
  * Only SUBMITTED files count. Staged files are not a submission and must never
  * move an item off 'outstanding'.
+ *
+ * A 'superseded' file is excluded alongside a deleted one: a version that a
+ * newer one has overtaken is not awaiting anything from anyone, and leaving it
+ * in the reckoning is what kept an item flagged for ever after the company had
+ * already sent the correction (HANDOVER-CW010). Note what this does NOT do: a
+ * superseded file is excluded, not reinterpreted, so an item whose only
+ * submitted file has been superseded falls back to its baseline rather than
+ * inheriting anything from the retired version. That is honest — nothing
+ * currently submitted answers the request — and it is why the baseline had to
+ * become a stored fact (migration 016).
  */
-export function deriveItemState(files = [], seededState = 'outstanding') {
-  const submitted = files.filter((f) => f.upload_state === 'submitted' && !f.deleted_at);
+export function deriveItemState(files = [], baselineState = 'outstanding') {
+  const submitted = files.filter(
+    (f) => f.upload_state === 'submitted' && !f.deleted_at && f.status !== 'superseded'
+  );
 
-  if (submitted.length === 0) return seededState;
+  if (submitted.length === 0) return baselineState;
   if (submitted.some((f) => f.status === 'attention_needed')) return 'attention_needed';
   if (submitted.every((f) => f.status === 'completed')) return 'completed';
   if (submitted.some((f) => f.status === 'in_review')) return 'in_review';
@@ -151,7 +174,7 @@ export function deriveItemState(files = [], seededState = 'outstanding') {
 /** Recompute and persist one item's state. Returns the new state. */
 export async function recomputeItemState(itemId, client = pool) {
   const { rows: [item] } = await client.query(
-    `SELECT id, state, template_item_id, already_held FROM company_irl_items WHERE id = $1`,
+    `SELECT id, state, baseline_state FROM company_irl_items WHERE id = $1`,
     [itemId]
   );
   if (!item) return null;
@@ -165,11 +188,11 @@ export async function recomputeItemState(itemId, client = pool) {
   // away by a file arriving.
   if (item.state === 'not_applicable') return item.state;
 
-  // The seeded state to fall back to when nothing is submitted. Once a file has
-  // been submitted the seeded state is irrelevant; before that, 'held' and
-  // 'partially_held' must survive.
-  const seeded = ['held', 'partially_held'].includes(item.state) ? item.state : 'outstanding';
-  const next = deriveItemState(files, seeded);
+  // The state to fall back to when nothing submitted counts. Read from the
+  // column rather than inferred from the current state: since a file can now be
+  // superseded, an item can travel backwards, and inferring would have answered
+  // 'outstanding' for anything that had ever moved. See migration 016.
+  const next = deriveItemState(files, item.baseline_state || 'outstanding');
 
   if (next !== item.state) {
     await client.query(
@@ -293,15 +316,19 @@ export async function seedCompanyChecklist({ companyId, templateId }, client = p
 
   let inserted = 0;
   for (const t of templateItems) {
+    // `state` and `baseline_state` start equal and then diverge: the first
+    // tracks the files, the second stays put so the item has somewhere honest
+    // to fall back to once a file is superseded (migration 016).
+    const seeded = seedStateFor(t.already_held);
     const { rowCount } = await client.query(
       `INSERT INTO company_irl_items
          (company_id, template_item_id, section, ref, description, priority, state,
-          already_held, note_for_company, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          baseline_state, already_held, note_for_company, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (company_id, ref) DO NOTHING`,
       [
         companyId, t.id, t.section, t.ref, t.description, t.priority,
-        seedStateFor(t.already_held), t.already_held, t.note_for_company, t.sort_order,
+        seeded, seeded, t.already_held, t.note_for_company, t.sort_order,
       ]
     );
     inserted += rowCount;

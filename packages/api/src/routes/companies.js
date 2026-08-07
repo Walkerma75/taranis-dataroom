@@ -35,6 +35,7 @@ import {
   seedCompanyChecklist,
   summariseProgress,
   recomputeItemState,
+  isBaselineState,
 } from '../services/companies.js';
 import {
   buildPrefilledWorkbook,
@@ -895,7 +896,17 @@ router.patch('/:id/irl-items/:itemId', requireCompanyAccess({ write: true }), as
 
   if (description !== undefined) add('description', description);
   if (priority !== undefined) add('priority', priority);
-  if (state !== undefined) add('state', state);
+  if (state !== undefined) {
+    add('state', state);
+    // A reviewer setting 'held', 'partially_held' or 'outstanding' by hand is
+    // making the same kind of statement the seeding did — what Taranis holds,
+    // independently of any submission — so it becomes the state this item falls
+    // back to when nothing submitted counts. The derived states are not
+    // baselines: they are a projection of the files and are recomputed from
+    // them, so storing one would freeze a snapshot as if it were a decision.
+    // 'not_applicable' is not one either; it short circuits the recompute.
+    if (isBaselineState(state)) add('baseline_state', state);
+  }
   if (noteForCompany !== undefined) add('note_for_company', noteForCompany || null);
   if (internalNote !== undefined) add('internal_note', internalNote || null);
   if (alreadyHeld !== undefined) add('already_held', alreadyHeld || null);
@@ -1566,10 +1577,19 @@ async function loadFileForTaranis(req, res, { write }) {
  * A note is mandatory for 'attention_needed' — the company is being asked to do
  * something and an unexplained flag wastes a round trip. Enforced here for the
  * readable message and again by a CHECK constraint on file_status_history.
+ *
+ * 'superseded' is settable by hand as well as being applied automatically at
+ * submission, and it has to be: the automatic path only fires when the
+ * replacement came up the version chain, and a company that uploads its
+ * correction as a fresh document instead leaves the old version flagged with
+ * nothing to retire it. That is the case that was actually hit in the smoke
+ * test (HANDOVER-CW010 §2). It is not a one-way door — setting the file back to
+ * any other status returns it to the reckoning — and a note stays optional,
+ * because the fact a newer version exists is the explanation.
  */
 companyFilesRouter.patch('/:fileId/status', async (req, res) => {
   const { status, note } = req.body;
-  const valid = ['received', 'in_review', 'attention_needed', 'completed'];
+  const valid = ['received', 'in_review', 'attention_needed', 'completed', 'superseded'];
   if (!valid.includes(status)) {
     return res.status(400).json({ error: 'Invalid status' });
   }
