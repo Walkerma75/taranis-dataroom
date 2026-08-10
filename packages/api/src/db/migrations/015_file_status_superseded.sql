@@ -1,0 +1,31 @@
+-- ============================================================================
+-- 015: Add the `superseded` value to the file_status enum
+--
+-- This migration does ONE thing, deliberately, for exactly the reason set out
+-- at length in 010: `autoMigrate()` wraps every migration file in BEGIN/COMMIT,
+-- and PostgreSQL 12+ permits `ALTER TYPE ... ADD VALUE` inside a transaction
+-- block but refuses to let the new value be USED in the transaction that added
+-- it. Any statement here that referenced 'superseded' — an UPDATE, a CHECK, a
+-- DEFAULT — would fail with "unsafe use of new value of enum type", on deploy
+-- rather than in a test. The column added for the same defect therefore lives
+-- in 016, and nothing writes 'superseded' until this has committed.
+--
+-- WHY the value exists: a submitted file that a newer version has overtaken is
+-- not awaiting anything from anyone, but until now it kept whatever status it
+-- last had. A file flagged 'attention_needed' therefore held its checklist item
+-- flagged for ever, on both portals, with no way to clear it short of
+-- falsifying the old file's status. 'superseded' is how a version leaves the
+-- reckoning without being deleted and without being pretended into 'completed'.
+-- See `deriveItemState()` in services/companies.js and HANDOVER-CW010.
+--
+-- Nothing is deleted or rewritten by this migration or by the code that uses
+-- it: the old row, its bytes in S3, and its file_status_history entries all
+-- stay exactly where they are. That is the point of superseding rather than
+-- removing.
+--
+-- Forward-only and idempotent: `IF NOT EXISTS` makes a re-run a no-op, and the
+-- value is never removed (PostgreSQL cannot drop an enum value; 007 left
+-- 'consultant' in place and 010 says the same).
+-- ============================================================================
+
+ALTER TYPE file_status ADD VALUE IF NOT EXISTS 'superseded';

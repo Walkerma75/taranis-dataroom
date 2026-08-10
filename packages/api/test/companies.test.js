@@ -25,6 +25,8 @@ import {
   summariseProgress,
   seedStateFor,
   canWriteAtLevel,
+  isBaselineState,
+  BASELINE_STATES,
   COMPANY_MAX_FILE_BYTES,
 } from '../src/services/companies.js';
 
@@ -143,7 +145,7 @@ test('an internal note never survives the company-facing shape', () => {
 // Item state derivation
 // ---------------------------------------------------------------------------
 
-test('an item with no files keeps its seeded state', () => {
+test('an item with no files keeps its baseline state', () => {
   assert.equal(deriveItemState([], 'outstanding'), 'outstanding');
   assert.equal(deriveItemState([], 'held'), 'held');
   assert.equal(deriveItemState([], 'partially_held'), 'partially_held');
@@ -189,6 +191,65 @@ test('a deleted file does not count towards a state', () => {
     { upload_state: 'submitted', status: 'received', deleted_at: new Date() },
   ];
   assert.equal(deriveItemState(files, 'outstanding'), 'outstanding');
+});
+
+// ---------------------------------------------------------------------------
+// Superseded versions (HANDOVER-CW010)
+// ---------------------------------------------------------------------------
+
+test('a superseded file does not hold an item at attention_needed', () => {
+  // The reported bug, at its smallest. The old version was flagged, the
+  // replacement has been received and completed, and before this the flag on
+  // the retired version outranked everything and pinned the item for ever.
+  const files = [
+    { upload_state: 'submitted', status: 'superseded' },
+    { upload_state: 'submitted', status: 'completed' },
+  ];
+  assert.equal(deriveItemState(files), 'completed');
+});
+
+test('a superseded file keeps its old status out of the reckoning entirely', () => {
+  // Not just attention_needed: a retired version must not drag an item down to
+  // 'received' either, or a replacement that has been fully reviewed would
+  // never read as completed.
+  assert.equal(deriveItemState([
+    { upload_state: 'submitted', status: 'superseded' },
+    { upload_state: 'submitted', status: 'in_review' },
+  ]), 'in_review');
+
+  assert.equal(deriveItemState([
+    { upload_state: 'submitted', status: 'attention_needed', deleted_at: null },
+    { upload_state: 'submitted', status: 'superseded' },
+  ]), 'attention_needed');
+});
+
+test('an item whose only submitted file is superseded falls back to its baseline', () => {
+  // The replacement is staged and not yet submitted, so nothing currently
+  // submitted answers the request. Falling back is the honest answer, and the
+  // baseline is what makes it honest rather than merely 'outstanding'.
+  const files = [
+    { upload_state: 'submitted', status: 'superseded' },
+    { upload_state: 'staged', status: null },
+  ];
+  assert.equal(deriveItemState(files, 'outstanding'), 'outstanding');
+  assert.equal(deriveItemState(files, 'partially_held'), 'partially_held');
+  // The case that would have been silently downgraded before migration 016: an
+  // item Taranis holds in full must not turn back into one the company is asked
+  // for again.
+  assert.equal(deriveItemState(files, 'held'), 'held');
+});
+
+test('only the states that describe what Taranis holds can be a baseline', () => {
+  assert.deepEqual(BASELINE_STATES, ['outstanding', 'partially_held', 'held']);
+  for (const state of BASELINE_STATES) assert.equal(isBaselineState(state), true);
+  // Derived states are a projection of the files; storing one as a baseline
+  // would freeze a snapshot as though it were a decision.
+  for (const state of ['received', 'in_review', 'attention_needed', 'completed']) {
+    assert.equal(isBaselineState(state), false);
+  }
+  // 'not_applicable' short circuits recomputeItemState and is never a fallback.
+  assert.equal(isBaselineState('not_applicable'), false);
+  assert.equal(isBaselineState(undefined), false);
 });
 
 // ---------------------------------------------------------------------------

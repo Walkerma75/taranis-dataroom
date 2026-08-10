@@ -15,6 +15,7 @@ export const STATE_LABELS = {
   attention_needed: 'Attention needed',
   completed: 'Completed',
   not_applicable: 'Not applicable',
+  superseded: 'Superseded',
 };
 
 export const STATE_COLOURS = {
@@ -26,7 +27,67 @@ export const STATE_COLOURS = {
   attention_needed: '#B54A32',
   completed: '#3A5247',
   not_applicable: '#D9D9D9',
+  // Neutral grey and deliberately quiet: a superseded version is not a problem,
+  // not an outcome, and not something either side has to act on.
+  superseded: '#BFBFBF',
 };
+
+/**
+ * The statuses a reviewer can set on a submitted file, and when the note is
+ * compulsory.
+ *
+ * One list, because there are two Set status modals — the Files tab on
+ * CompanyDetailPage and the Review Queue — and they were separate hard-coded
+ * copies. Adding a status to one and not the other is the drift this closes:
+ * a reviewer would have found Superseded on one screen and not the other, with
+ * no way to tell which was right.
+ *
+ * 'superseded' is offered on both. It looks like it belongs only on the Files
+ * tab, but the Review Queue lists everything still at 'received', so a company
+ * that sent v1 and then v2 as a separate document leaves both sitting there and
+ * the old one has to be retirable from where the reviewer actually is.
+ */
+export const FILE_STATUS_OPTIONS = [
+  { value: 'received', label: 'Received' },
+  { value: 'in_review', label: 'In review' },
+  { value: 'attention_needed', label: 'Attention needed' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'superseded', label: 'Superseded' },
+];
+
+export const NOTE_REQUIRED_STATUSES = ['attention_needed'];
+
+export function noteRequiredFor(status) {
+  return NOTE_REQUIRED_STATUSES.includes(status);
+}
+
+export const NOTE_REQUIRED_HINT =
+  'The company sees this note. Say exactly what is wrong and what you need instead.';
+export const NOTE_REQUIRED_MESSAGE = 'A note is required when a file needs attention';
+export const NOTE_OPTIONAL_HINT = 'Optional.';
+export const NOTE_SUPERSEDED_HINT =
+  'Optional. The company sees this note. Use it if it is not obvious which document replaces this one.';
+
+/** The note hint for a status, so both Set status modals read identically. */
+export function noteHintFor(status) {
+  if (noteRequiredFor(status)) return NOTE_REQUIRED_HINT;
+  if (status === 'superseded') return NOTE_SUPERSEDED_HINT;
+  return NOTE_OPTIONAL_HINT;
+}
+
+/**
+ * The heading above a reviewer's note on the company's own item page.
+ *
+ * Three cases, not two. A superseded file's note is usually machine-written at
+ * submission ("Replaced by version 2: accounts.pdf") and describes something
+ * the COMPANY did, so rendering it under "Note from Taranis" would attribute
+ * the company's own action to a reviewer.
+ */
+export function fileNoteHeading(status) {
+  if (status === 'attention_needed') return 'Taranis needs something changed';
+  if (status === 'superseded') return 'Replaced by a newer version';
+  return 'Note from Taranis';
+}
 
 export const PRIORITY_LABELS = {
   high: 'High',

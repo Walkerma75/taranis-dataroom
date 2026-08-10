@@ -18,6 +18,7 @@ import {
   isOffDomain, isPendingNomination, inviteBlockedReason,
   UNSCANNED_WARNING, UNSCANNED_WARNING_DETAIL, isUnscanned,
   scanLabel, scanColour, scanBackendHint,
+  FILE_STATUS_OPTIONS, noteHintFor, noteRequiredFor, NOTE_REQUIRED_MESSAGE,
   formatBytes, formatUtc,
 } from '../company/irlDisplay.js';
 
@@ -981,14 +982,7 @@ export default function CompanyDetailPage() {
       >
         <Form form={statusForm} layout="vertical" onFinish={setFileStatus} requiredMark={false}>
           <Form.Item name="status" label="Status" rules={[{ required: true, message: 'Please choose a status' }]}>
-            <Select
-              options={[
-                { value: 'received', label: 'Received' },
-                { value: 'in_review', label: 'In review' },
-                { value: 'attention_needed', label: 'Attention needed' },
-                { value: 'completed', label: 'Completed' },
-              ]}
-            />
+            <Select options={FILE_STATUS_OPTIONS} />
           </Form.Item>
           <Form.Item
             noStyle
@@ -998,11 +992,9 @@ export default function CompanyDetailPage() {
               <Form.Item
                 name="note"
                 label="Note"
-                extra={getFieldValue('status') === 'attention_needed'
-                  ? 'The company sees this note. Say exactly what is wrong and what you need instead.'
-                  : 'Optional.'}
-                rules={getFieldValue('status') === 'attention_needed'
-                  ? [{ required: true, message: 'A note is required when a file needs attention' }]
+                extra={noteHintFor(getFieldValue('status'))}
+                rules={noteRequiredFor(getFieldValue('status'))
+                  ? [{ required: true, message: NOTE_REQUIRED_MESSAGE }]
                   : []}
               >
                 <Input.TextArea rows={3} />

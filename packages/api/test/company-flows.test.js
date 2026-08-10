@@ -125,6 +125,226 @@ test('a successful submission takes a receipt reference, moves the files and ret
   assert.ok(pool.sql().includes('COMMIT'));
 });
 
+// ---------------------------------------------------------------------------
+// Superseding a replaced version (HANDOVER-CW010)
+// ---------------------------------------------------------------------------
+
+const OLD_FILE = 'cccccccc-3333-4333-8333-cccccccccccc';
+
+/** A staged replacement, pointing at the submitted version it supersedes. */
+function replacementFile(id, { supersedes, itemId = 'item-1', version = 2 } = {}) {
+  return { ...stagedFile(id, itemId), supersedes, version };
+}
+
+const submitHandlers = (extra = []) => [
+  membershipHandler(membershipRow({ companyId: COMPANY_A })),
+  ["nextval('company_receipt_ref_seq')", [{ n: 42 }]],
+  ['INSERT INTO submission_batches', [{
+    id: 'batch-1',
+    receipt_ref: 'TRN-DD-2026-000042',
+    submitted_at: new Date('2026-08-06T10:00:00Z'),
+  }]],
+  ...extra,
+];
+
+test('submitting a replacement retires the submitted version it supersedes', async (t) => {
+  const pool = fakePool(submitHandlers([
+    ['FROM company_files\n       WHERE id = ANY', [
+      replacementFile(FILE_1, { supersedes: OLD_FILE }),
+    ]],
+    ['SELECT id, irl_item_id, filename, status FROM company_files', [{
+      id: OLD_FILE, irl_item_id: 'item-1', filename: 'accounts-2024.pdf',
+      status: 'attention_needed',
+    }]],
+    ['SELECT id, state, baseline_state', [{
+      id: 'item-1', state: 'attention_needed', baseline_state: 'outstanding',
+    }]],
+    // What the item derives from once the old version has been retired.
+    ['SELECT upload_state, status, deleted_at FROM company_files', [
+      { upload_state: 'submitted', status: 'superseded', deleted_at: null },
+      { upload_state: 'submitted', status: 'received', deleted_at: null },
+    ]],
+  ]));
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/submit', {
+    method: 'POST', token: companyAdminToken(), body: { fileIds: [FILE_1] },
+  });
+  assert.equal(res.status, 201);
+
+  const sql = pool.sql().join('\n');
+  // The old version is retired, and the retirement is inside the transaction
+  // that made the submission: a receipt the company holds must not be able to
+  // exist alongside a predecessor that was never retired.
+  assert.match(sql, /UPDATE company_files SET status = 'superseded' WHERE id = \$1/);
+  const retire = pool.calls.find((c) => c.text.includes("SET status = 'superseded'"));
+  assert.deepEqual(retire.params, [OLD_FILE]);
+  assert.ok(pool.sql().indexOf('COMMIT') > pool.sql().indexOf(retire.text));
+
+  // The lookup that found it was scoped to the caller's company and to a file
+  // that is actually submitted, not staged.
+  const lookup = pool.calls.find((c) =>
+    c.text.includes('SELECT id, irl_item_id, filename, status FROM company_files'));
+  assert.deepEqual(lookup.params, [OLD_FILE, COMPANY_A]);
+  assert.match(lookup.text, /upload_state = 'submitted'/);
+  assert.match(lookup.text, /status <> 'superseded'/);
+
+  // History records the retirement and names the version that caused it.
+  const history = pool.calls.find((c) => c.text.includes("VALUES ($1, 'superseded', $2, $3)"));
+  assert.ok(history, 'a superseded history row was written');
+  assert.equal(history.params[0], OLD_FILE);
+  assert.match(history.params[1], /Replaced by version 2: /);
+
+  // And the item state was recomputed off the flag.
+  const update = pool.calls.find((c) => c.text.includes('UPDATE company_irl_items SET state'));
+  assert.equal(update.params[1], 'received');
+});
+
+test('the retirement records the status the old version is leaving, not the one it lands on', async (t) => {
+  // An UPDATE ... RETURNING would hand back 'superseded' and the audit entry
+  // would say the file went from superseded to superseded.
+  const pool = fakePool(submitHandlers([
+    ['FROM company_files\n       WHERE id = ANY', [
+      replacementFile(FILE_1, { supersedes: OLD_FILE }),
+    ]],
+    ['SELECT id, irl_item_id, filename, status FROM company_files', [{
+      id: OLD_FILE, irl_item_id: 'item-1', filename: 'accounts-2024.pdf',
+      status: 'attention_needed',
+    }]],
+  ]));
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  await server.request('/company/submit', {
+    method: 'POST', token: companyAdminToken(), body: { fileIds: [FILE_1] },
+  });
+
+  // Every status change lands in audit_log as well as file_status_history
+  // (migration 013), including the ones the system makes on the company's
+  // behalf.
+  const audit = pool.calls.find((c) =>
+    c.text.includes('INSERT INTO audit_log') && c.params?.[1] === 'company_file.superseded');
+  assert.ok(audit, 'the retirement was audited');
+  const detail = typeof audit.params[4] === 'string' ? JSON.parse(audit.params[4]) : audit.params[4];
+  assert.equal(detail.from, 'attention_needed');
+  assert.equal(detail.replacedBy, FILE_1);
+});
+
+test('a replacement whose predecessor is only staged retires nothing', async (t) => {
+  // The staged predecessor is left alone deliberately: replacing a staged file
+  // leaves both in the staged list, a known rough edge and out of CW010's
+  // scope. What must not happen is a silent failure that looks like success
+  // while an attention_needed flag survives.
+  const pool = fakePool(submitHandlers([
+    ['FROM company_files\n       WHERE id = ANY', [
+      replacementFile(FILE_1, { supersedes: OLD_FILE }),
+    ]],
+    // The scoped lookup finds nothing, because the predecessor is not submitted.
+    ['SELECT id, irl_item_id, filename, status FROM company_files', []],
+  ]));
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/submit', {
+    method: 'POST', token: companyAdminToken(), body: { fileIds: [FILE_1] },
+  });
+
+  assert.equal(res.status, 201);
+  assert.equal(pool.sql().some((s) => s.includes("SET status = 'superseded'")), false);
+  assert.ok(pool.sql().includes('COMMIT'));
+});
+
+test('a submission with no replacements in it retires nothing', async (t) => {
+  const pool = fakePool(submitHandlers([
+    ['FROM company_files\n       WHERE id = ANY', [stagedFile(FILE_1), stagedFile(FILE_2)]],
+  ]));
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/submit', {
+    method: 'POST', token: companyAdminToken(), body: { fileIds: [FILE_1, FILE_2] },
+  });
+
+  assert.equal(res.status, 201);
+  assert.equal(pool.sql().some((s) => s.includes("SET status = 'superseded'")), false);
+});
+
+test('a version that has already been replaced cannot be replaced again', async (t) => {
+  // The item page hides the button on those rows, but a UI-only rule is a
+  // courtesy. Without this the chain forks and both branches mint a file
+  // numbered version 2.
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['SELECT * FROM company_files', [{
+      id: OLD_FILE, company_id: COMPANY_A, irl_item_id: 'item-1',
+      upload_state: 'submitted', status: 'superseded', version: 1, deleted_at: null,
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const form = new FormData();
+  form.append('description', 'A corrected set of accounts');
+  form.append('file', new Blob(['%PDF-1.4 test'], { type: 'application/pdf' }), 'accounts.pdf');
+
+  const res = await fetch(`${server.base}/company/files/${OLD_FILE}/replace`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${companyAdminToken()}` },
+    body: form,
+  });
+  const body = await res.json();
+
+  assert.equal(res.status, 409);
+  assert.match(body.error, /already been replaced/);
+  // Refused before anything was written, not after.
+  assert.equal(pool.sql().some((s) => s.includes('INSERT INTO company_files')), false);
+});
+
+test('a reviewer can retire a version by hand, and without a note', async (t) => {
+  // The route the smoke test actually took: the correction arrived as a
+  // separate document, so no version chain exists and nothing retires the old
+  // file automatically.
+  const pool = fakePool([
+    ['FROM company_files f\n     JOIN companies c', [{
+      id: FILE_1, company_id: COMPANY_A, irl_item_id: 'item-1',
+      upload_state: 'submitted', status: 'attention_needed', legal_name: 'Example Bio',
+    }]],
+    ['SELECT id, state, baseline_state', [{
+      id: 'item-1', state: 'attention_needed', baseline_state: 'partially_held',
+    }]],
+    ['SELECT upload_state, status, deleted_at FROM company_files', [
+      { upload_state: 'submitted', status: 'superseded', deleted_at: null },
+      { upload_state: 'submitted', status: 'completed', deleted_at: null },
+    ]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company-files/${FILE_1}/status`, {
+    method: 'PATCH', token: adminToken(), body: { status: 'superseded' },
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.status, 'superseded');
+  // The flag clears without anyone having to falsify the old file's status.
+  const update = pool.calls.find((c) => c.text.includes('UPDATE company_irl_items SET state'));
+  assert.equal(update.params[1], 'completed');
+});
+
+test('an unknown file status is still refused', async (t) => {
+  const pool = fakePool([]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  for (const status of ['superceded', 'retired', 'deleted', '']) {
+    const res = await server.request(`/company-files/${FILE_1}/status`, {
+      method: 'PATCH', token: adminToken(), body: { status },
+    });
+    assert.equal(res.status, 400, `${status} should be refused`);
+  }
+});
+
 test('the staged file lock is scoped to the caller\'s own company', async (t) => {
   const pool = fakePool([
     membershipHandler(membershipRow({ companyId: COMPANY_A })),
@@ -227,7 +447,9 @@ test('a status change writes history and recomputes the item state', async (t) =
       id: FILE_1, company_id: COMPANY_A, irl_item_id: 'item-1',
       upload_state: 'submitted', status: 'received', legal_name: 'Example Bio',
     }]],
-    ['SELECT id, state, template_item_id', [{ id: 'item-1', state: 'received' }]],
+    ['SELECT id, state, baseline_state', [{
+      id: 'item-1', state: 'received', baseline_state: 'outstanding',
+    }]],
     ['SELECT upload_state, status, deleted_at FROM company_files', [
       { upload_state: 'submitted', status: 'attention_needed', deleted_at: null },
     ]],
@@ -545,8 +767,56 @@ test('activation with both gates seeds the checklist from the fund template', as
   assert.equal(seedInserts.length, 2);
   assert.equal(seedInserts[0].params[6], 'outstanding');
   assert.equal(seedInserts[1].params[6], 'held');
+  // The baseline starts equal to the state and then stays put while the state
+  // follows the files, so an item Taranis holds in full still reads 'held' if
+  // every file submitted against it is later superseded (migration 016).
+  assert.equal(seedInserts[0].params[7], 'outstanding');
+  assert.equal(seedInserts[1].params[7], 'held');
   // The insert skips conflicts, so re-activating a seeded company is safe.
   assert.match(seedInserts[0].text, /ON CONFLICT \(company_id, ref\) DO NOTHING/);
+});
+
+test('a reviewer setting an item held moves its baseline with it', async (t) => {
+  // Without this the baseline would still say 'outstanding', and the next
+  // recompute with nothing submitted would quietly undo the reviewer.
+  const pool = fakePool([
+    ['SELECT level FROM company_reviewers', [{ level: 'write' }]],
+    ['UPDATE company_irl_items SET', [{ id: 'item-1', ref: '1.1', state: 'held' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/irl-items/item-1`, {
+    method: 'PATCH', token: adminToken(), body: { state: 'held' },
+  });
+
+  assert.equal(res.status, 200);
+  const update = pool.calls.find((c) => c.text.includes('UPDATE company_irl_items SET'));
+  assert.match(update.text, /baseline_state = \$4/);
+  assert.equal(update.params[2], 'held');
+  assert.equal(update.params[3], 'held');
+});
+
+test('a reviewer setting a derived state leaves the baseline alone', async (t) => {
+  // 'completed' describes the files, not what Taranis holds independently of
+  // them. Storing it as a baseline would freeze a snapshot as if it were a
+  // decision, and an item would then never fall back below it.
+  for (const state of ['completed', 'in_review', 'attention_needed', 'received', 'not_applicable']) {
+    const pool = fakePool([
+      ['SELECT level FROM company_reviewers', [{ level: 'write' }]],
+      ['UPDATE company_irl_items SET', [{ id: 'item-1', ref: '1.1', state }]],
+    ]);
+    const server = await startTestServer(MOUNTS, pool);
+
+    const res = await server.request(`/companies/${COMPANY_A}/irl-items/item-1`, {
+      method: 'PATCH', token: adminToken(), body: { state },
+    });
+    assert.equal(res.status, 200);
+
+    const update = pool.calls.find((c) => c.text.includes('UPDATE company_irl_items SET'));
+    assert.equal(update.text.includes('baseline_state'), false, `${state} must not set a baseline`);
+    await server.close();
+  }
 });
 
 test('an offboarded company cannot be reactivated through activate', async (t) => {

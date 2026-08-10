@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Typography, Card, Tag, Space, Button, Input, Upload, List, Alert, Spin, message,
   Popconfirm, Divider,
@@ -9,7 +9,7 @@ import { api, apiFetch } from '../../api/client.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
   STATE_LABELS, STATE_COLOURS, PRIORITY_LABELS, PRIORITY_COLOURS,
-  ACCEPTED_UPLOAD_TYPES, MAX_UPLOAD_BYTES, formatBytes, formatUtc,
+  ACCEPTED_UPLOAD_TYPES, MAX_UPLOAD_BYTES, formatBytes, formatUtc, fileNoteHeading,
 } from './irlDisplay.js';
 
 const { Title, Text, Paragraph } = Typography;
@@ -37,7 +37,32 @@ export default function ItemDetailPage() {
   const [description, setDescription] = useState('');
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
+  // The file being replaced, not just its id: the upload card names it, and a
+  // replacement whose target is invisible is the defect this page had.
   const [replacing, setReplacing] = useState(null);
+
+  // A wrapper div rather than a ref on the Card. antd's Card does not forward a
+  // DOM ref, so scrollIntoView on it silently does nothing.
+  const uploadCardRef = useRef(null);
+
+  /**
+   * Put the page into replacement mode and take the user to the upload card.
+   *
+   * The scroll is the whole fix for the reported defect. Both "Replace" and
+   * "Upload a newer version" sit at the bottom of a long file list and their
+   * only effect was to change the title of a card off the top of the screen, so
+   * the link read as dead and the company worked around it by uploading the
+   * correction as a separate document, which is what left the old version
+   * flagged for ever (HANDOVER-CW010 §2).
+   */
+  const startReplacing = (f) => {
+    setReplacing(f);
+    // After the state has painted, so the card is in replacement mode when the
+    // scroll lands on it.
+    requestAnimationFrame(() => {
+      uploadCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
 
   const load = async () => {
     setLoading(true);
@@ -65,7 +90,7 @@ export default function ItemDetailPage() {
       if (!replacing) form.append('irlItemId', itemId);
 
       const path = replacing
-        ? `/company/files/${replacing}/replace`
+        ? `/company/files/${replacing.id}/replace`
         : '/company/files';
 
       const res = await apiFetch(path, { method: 'POST', body: form });
@@ -128,8 +153,22 @@ export default function ItemDetailPage() {
       </Card>
 
       {canUpload && (
+        <div ref={uploadCardRef}>
         <Card title={replacing ? 'Upload a replacement' : 'Add a document'}>
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            {replacing && (
+              <Alert
+                type="info"
+                showIcon
+                message={`Replacing ${replacing.filename}`}
+                description={
+                  'The version you upload here becomes the current one. '
+                  + `${replacing.filename} is kept on the record with everything already said `
+                  + 'about it, and stops counting towards this request once you submit the '
+                  + 'replacement.'
+                }
+              />
+            )}
             <div>
               <Text strong>Description</Text>
               <Paragraph type="secondary" style={{ marginBottom: 8 }}>
@@ -183,6 +222,7 @@ export default function ItemDetailPage() {
             </Text>
           </Space>
         </Card>
+        </div>
       )}
 
       {staged.length > 0 && (
@@ -196,7 +236,7 @@ export default function ItemDetailPage() {
                     key="replace"
                     type="link"
                     icon={<SwapOutlined />}
-                    onClick={() => setReplacing(f.id)}
+                    onClick={() => startReplacing(f)}
                   >
                     Replace
                   </Button>,
@@ -264,17 +304,20 @@ export default function ItemDetailPage() {
                         <Alert
                           type={f.status === 'attention_needed' ? 'warning' : 'info'}
                           showIcon
-                          message={f.status === 'attention_needed'
-                            ? 'Taranis needs something changed'
-                            : 'Note from Taranis'}
+                          message={fileNoteHeading(f.status)}
                           description={f.statusNote}
                         />
                       )}
                     </Space>
                   )}
                 />
-                {canUpload && (
-                  <Button type="link" icon={<SwapOutlined />} onClick={() => setReplacing(f.id)}>
+                {/*
+                  A version that has already been replaced is not the one to
+                  replace again: the chain runs from the current version, and
+                  the server refuses it too.
+                */}
+                {canUpload && f.status !== 'superseded' && (
+                  <Button type="link" icon={<SwapOutlined />} onClick={() => startReplacing(f)}>
                     Upload a newer version
                   </Button>
                 )}
