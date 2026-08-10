@@ -146,3 +146,19 @@ test('an unparseable message is deleted rather than blocking the queue behind it
   assert.equal(result.applied, 0);
   assert.deepEqual(deleted, ['r-9']);
 });
+
+// Every test above injects its own `sqs` double, so none of them ever loads the
+// real SDK — and the consumer imports it dynamically, so nothing else does
+// either until a queue is configured. That combination once let
+// `@aws-sdk/client-sqs` be absent from `packages/api/package.json` with the
+// suite fully green; the failure would have surfaced as the API exiting at boot
+// the first time SES_EVENTS_QUEUE_URL was set on the task definition, which is
+// the worst possible place to find it. This test is the one that actually
+// resolves the package.
+test('the SQS SDK the consumer imports at runtime is a declared dependency', async () => {
+  const sdk = await import('@aws-sdk/client-sqs');
+
+  assert.equal(typeof sdk.SQSClient, 'function');
+  assert.equal(typeof sdk.ReceiveMessageCommand, 'function');
+  assert.equal(typeof sdk.DeleteMessageCommand, 'function');
+});

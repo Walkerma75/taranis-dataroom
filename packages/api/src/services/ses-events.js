@@ -29,6 +29,15 @@
  * under the C002 §5.1 split. With it unset the consumer does not start and says
  * so once at boot. `applySesEvent()` is fully built and tested regardless, so
  * the day the queue appears the only change is an environment variable.
+ *
+ * WHICH IS WHY `@aws-sdk/client-sqs` IS A DEPENDENCY AND NOT A LAZY HOPE. The
+ * import below is dynamic, so nothing loads it until a queue is configured, and
+ * every test injects its own `sqs` double and never reaches it. That is exactly
+ * the shape in which a missing dependency hides: the suite stays green and the
+ * task dies at boot the first time someone sets the variable, because startup
+ * treats a failed consumer start as fatal. It is declared in
+ * `packages/api/package.json` alongside the SES and S3 clients. Do not remove it
+ * on the evidence that nothing imports it statically.
  */
 import { pool as defaultPool } from '../db.js';
 import { suppress } from './notifications.js';
