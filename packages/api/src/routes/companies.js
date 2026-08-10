@@ -9,9 +9,12 @@
  * Role 'company' is refused outright by `rejectCompanyRole` at the mount, and
  * again inside `requireCompanyAccess`.
  *
- * Nothing here sends email. Invitations produce a link for an admin to send by
- * hand, exactly as the existing fund-side invite flow does (HANDOVER-CW004 §3
- * item 3). Notifications to admin@ are Phase 1b.
+ * EMAIL. Phase 1b wired the platform's own notifications through the outbox in
+ * `services/notifications.js`. Every `queue()` call in this file passes the
+ * transaction's `client`, so the message commits with the thing it announces or
+ * not at all, and no route ever waits on SES. An invitation still returns its
+ * link in the response, now as a fallback rather than as the only channel
+ * (HANDOVER-CW011 §3.5).
  */
 import { Router } from 'express';
 import multer from 'multer';
@@ -28,12 +31,28 @@ import {
 import { logAudit } from '../services/audit.js';
 import { generateInviteToken, hashToken } from '../services/auth.js';
 import {
+  queue,
+  queueEach,
+  adminRecipient,
+  firstNameOf,
+  formatDate,
+  formatDateTimeUtc,
+  shortDescription,
+} from '../services/notifications.js';
+import {
+  inviteUrl as buildInviteUrl,
+  itemUrl,
+  workspaceUrl,
+  adminReviewUrl,
+} from '../services/links.js';
+import {
   canActivate,
   activationRefusalMessage,
   canInviteUsers,
   inviteRefusalMessage,
   seedCompanyChecklist,
   summariseProgress,
+  companyVisibleItems,
   recomputeItemState,
   isBaselineState,
 } from '../services/companies.js';
@@ -668,11 +687,31 @@ router.post('/:id/users', requireRole('admin'), async (req, res) => {
     );
 
     const token = generateInviteToken();
+    const expiresAt = new Date(Date.now() + 7 * 86400 * 1000);
     await client.query(
       `INSERT INTO invites (email, role, token_hash, invited_by, expires_at)
        VALUES ($1, 'company', $2, $3, $4)`,
-      [normalised, hashToken(token), req.user.sub, new Date(Date.now() + 7 * 86400 * 1000)]
+      [normalised, hashToken(token), req.user.sub, expiresAt]
     );
+
+    // The invitation itself. One insertion point covers both paths through this
+    // handler — a direct invitation and the approval of a nomination the
+    // company made — because both issue exactly one invite link, which is the
+    // thing the message carries.
+    //
+    // Inside the transaction on purpose: if anything below fails and this rolls
+    // back, the invitee is never told about an invitation that does not exist.
+    await queue(client, {
+      template: 'company-invite',
+      recipient: normalised,
+      payload: {
+        first_name: firstNameOf(displayName),
+        company_name: company.legal_name,
+        invite_url: buildInviteUrl(token),
+        invite_expiry_date: formatDate(expiresAt),
+        inviter_name: req.user.name || 'your Taranis contact',
+      },
+    });
 
     await client.query('COMMIT');
 
@@ -685,12 +724,17 @@ router.post('/:id/users', requireRole('admin'), async (req, res) => {
       ip: req.ip,
     });
 
+    // The link stays in the response even though the platform now sends it.
+    // It is the fallback when a counterparty's mail server quarantines the
+    // invitation, which is exactly the situation in which an administrator
+    // needs the link to hand and cannot wait for a redeploy to get it
+    // (HANDOVER-CW011 §3.5).
     res.status(201).json({
-      message: 'Invitation created. Send the link below to the invitee, together with '
-             + 'the company guide. No email has been sent.',
+      message: 'Invitation created and sent to the invitee by email. The link below is '
+             + 'a fallback if the message does not arrive; it is the same one-time link.',
       userId: user.id,
-      inviteUrl: `/invite/accept?token=${token}`,
-      expiresAt: new Date(Date.now() + 7 * 86400 * 1000),
+      inviteUrl: buildInviteUrl(token),
+      expiresAt,
     });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -841,6 +885,50 @@ router.get('/:id/irl-items', requireCompanyAccess(), async (req, res) => {
   }
 });
 
+/**
+ * Tell a company's users that new checklist items have been added.
+ *
+ * Goes to every active company user rather than to administrators only: an
+ * added item is usually work for whoever handles that section, and a
+ * contributor who never hears about it is the reason the item sits untouched.
+ *
+ * Logged and swallowed on failure, like the other post-commit notifications:
+ * the item is already added and audited, and a reviewer must not see adding an
+ * item fail because a message could not be queued.
+ */
+async function queueNewItemsNotification(companyId, { items, noteForCompany }) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT c.legal_name, u.email, u.display_name
+         FROM company_users cu
+         JOIN users u ON u.id = cu.user_id
+         JOIN companies c ON c.id = cu.company_id
+        WHERE cu.company_id = $1
+          AND cu.deactivated_at IS NULL
+          AND cu.approved_by IS NOT NULL`,
+      [companyId]
+    );
+    if (rows.length === 0) return;
+
+    await queueEach(pool, {
+      template: 'new-items',
+      recipients: rows.map((r) => ({
+        email: r.email,
+        payload: { first_name: firstNameOf(r.display_name) },
+      })),
+      payload: {
+        company_name: rows[0].legal_name,
+        new_item_count: items.length,
+        items,
+        note_for_company: noteForCompany || null,
+        workspace_url: workspaceUrl(),
+      },
+    });
+  } catch (err) {
+    console.error('[companies] Could not queue the new-items notification:', err.message);
+  }
+}
+
 // Ad hoc item, or a template addition pushed to one company.
 router.post('/:id/irl-items', requireCompanyAccess({ write: true }), async (req, res) => {
   const { section, ref, description, priority, noteForCompany } = req.body;
@@ -876,6 +964,29 @@ router.post('/:id/irl-items', requireCompanyAccess({ write: true }), async (req,
       resourceId: req.params.id,
       detail: { itemAdded: item.ref },
       ip: req.ip,
+    });
+
+    // Being asked for something new is the one change a company cannot
+    // reasonably be expected to discover by looking: nothing prompts them to
+    // re-read a checklist they have already worked through.
+    //
+    // HANDOVER-CW011 §3.5 left this conditional on the route existing. It does,
+    // and it already carries `noteForCompany`, which is the template's
+    // {{note_for_company}}, so it is wired. The route adds one item per call, so
+    // the approved subject renders as "1 new item(s) added"; the wording is
+    // approved and frozen, and the observation is recorded in HANDOVER-C011 §2
+    // rather than worked around here.
+    //
+    // `internal_note` is not read and must never be: `item` is not spread into
+    // the payload for exactly that reason, and only the two company-safe
+    // columns are named.
+    await queueNewItemsNotification(req.params.id, {
+      items: [{
+        ref: item.ref,
+        description_short: shortDescription(item.description),
+        priority: item.priority,
+      }],
+      noteForCompany: item.note_for_company,
     });
 
     res.status(201).json(item);
@@ -1572,6 +1683,122 @@ async function loadFileForTaranis(req, res, { write }) {
 }
 
 /**
+ * Everyone a status change is announced to: the uploader and every active
+ * Company Administrator.
+ *
+ * One query, and it deliberately goes through `company_users`, so a person who
+ * has left the company — deactivated by their own administrator — stops
+ * receiving diligence correspondence at the same moment they lose access to the
+ * portal. Reading the uploader straight off the file row would keep emailing a
+ * leaver about a company they can no longer see.
+ */
+async function statusRecipients(companyId, uploadedBy) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT u.email, u.display_name
+       FROM company_users cu
+       JOIN users u ON u.id = cu.user_id
+      WHERE cu.company_id = $1
+        AND cu.deactivated_at IS NULL
+        AND cu.approved_by IS NOT NULL
+        AND (cu.company_role = 'company_admin' OR u.id = $2)`,
+    [companyId, uploadedBy]
+  );
+
+  return rows.map((r) => ({
+    email: r.email,
+    payload: { first_name: firstNameOf(r.display_name) },
+  }));
+}
+
+/**
+ * Queue `status-attention` or `status-completed`.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT MUST NOT GET INTO THIS MESSAGE
+ * ---------------------------------------------------------------------------
+ * `company_irl_items.internal_note` is Taranis's private working note on an
+ * item and must never reach a company, in the portal, in an export, or here.
+ * The item lookup below names its columns for that reason: a `SELECT *` would
+ * put the internal note one careless spread away from a message addressed to
+ * the counterparty. The note that DOES go out is the reviewer's note from the
+ * request body, which is mandatory for 'attention_needed' precisely because the
+ * company is meant to read it.
+ *
+ * Any failure is logged and swallowed. The status change is already committed
+ * and audited by the time this runs; a reviewer must not see their own action
+ * fail because a notification could not be queued.
+ */
+async function queueStatusNotification(client, { req, file, status, note }) {
+  try {
+    const { rows: [item] } = file.irl_item_id
+      ? await client.query(
+        `SELECT ref, description FROM company_irl_items WHERE id = $1`,
+        [file.irl_item_id]
+      )
+      : { rows: [] };
+
+    const recipients = await statusRecipients(file.company_id, file.uploaded_by);
+    if (recipients.length === 0) return;
+
+    const common = {
+      company_name: file.legal_name,
+      filename: file.filename,
+      item_ref: item?.ref || '',
+      item_description_short: shortDescription(item?.description),
+    };
+
+    if (status === 'attention_needed') {
+      const { rows: [batch] } = file.batch_id
+        ? await client.query(
+          `SELECT receipt_ref, submitted_at FROM submission_batches WHERE id = $1`,
+          [file.batch_id]
+        )
+        : { rows: [] };
+
+      await queueEach(client, {
+        template: 'status-attention',
+        recipients,
+        payload: {
+          ...common,
+          submitted_at: batch ? formatDateTimeUtc(batch.submitted_at) : 'an earlier date',
+          receipt_ref: batch?.receipt_ref || '',
+          reviewer_note: note.trim(),
+          item_url: itemUrl(file.irl_item_id),
+        },
+      });
+      return;
+    }
+
+    // 'completed': the message quotes the company's progress, so it is read
+    // after `recomputeItemState` has run and reflects this acceptance rather
+    // than the state before it.
+    // Visible items only, which is the locked decision on what a company's
+    // progress means (HANDOVER-C002 §5.1): a company sees progress against what
+    // is actually asked of them, not against the full IRL. Visibility is
+    // derived from an item's state rather than stored, so it is applied here
+    // with the same function the portal uses.
+    const { rows: allItems } = await client.query(
+      `SELECT state FROM company_irl_items WHERE company_id = $1`,
+      [file.company_id]
+    );
+    const progress = summariseProgress(companyVisibleItems(allItems));
+
+    await queueEach(client, {
+      template: 'status-completed',
+      recipients,
+      payload: {
+        ...common,
+        progress_percent: `${progress.percentComplete}%`,
+        outstanding_count: progress.countable - progress.completed,
+        workspace_url: workspaceUrl(),
+      },
+    });
+  } catch (err) {
+    console.error('[company-files] Could not queue the status notification:', err.message);
+  }
+}
+
+/**
  * PATCH /company-files/:fileId/status
  *
  * A note is mandatory for 'attention_needed' — the company is being asked to do
@@ -1621,6 +1848,29 @@ companyFilesRouter.patch('/:fileId/status', async (req, res) => {
 
     if (file.irl_item_id) await recomputeItemState(file.irl_item_id);
 
+    // After the commit and after the recompute, deliberately, on both counts.
+    //
+    // After the commit because these two messages are the only ones in Phase 1b
+    // that depend on state derived AFTER the transaction they belong to: the
+    // 'completed' message quotes the company's progress, and the progress is
+    // only correct once `recomputeItemState` has folded this acceptance in. A
+    // notification queued inside the transaction would quote the figure from
+    // before the change and tell the company it was one item further behind
+    // than it is.
+    //
+    // The cost of that choice is the small window where the status change is
+    // committed and the process dies before the row is queued, losing the
+    // message. That is the right way round: a company that hears nothing checks
+    // its workspace and sees the change, whereas a company told the wrong
+    // progress figure has been given a wrong number in writing.
+    //
+    // Only these two statuses notify. 'received', 'in_review' and 'superseded'
+    // are internal progress that a company can see in its workspace and does
+    // not need an email about, and there is no approved template for them.
+    if (status === 'attention_needed' || status === 'completed') {
+      await queueStatusNotification(pool, { req, file, status, note });
+    }
+
     await logAudit({
       action: 'company_file.status_changed',
       userId: req.user.sub,
@@ -1635,7 +1885,6 @@ companyFilesRouter.patch('/:fileId/status', async (req, res) => {
       ip: req.ip,
     });
 
-    // No email in Phase 1a. status-attention and status-completed are 1b.
     res.json({ id: file.id, status, note: note?.trim() || null });
   } catch (err) {
     await client.query('ROLLBACK');

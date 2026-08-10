@@ -122,7 +122,10 @@ export default function CompanyDetailPage() {
   const invite = async (values) => {
     const data = await post('/users', values, null);
     if (data) {
-      setInviteLink(`${window.location.origin}${data.inviteUrl}`);
+      // Absolute since Phase 1b: the API knows its own public address now
+      // (PORTAL_URL), because the invitation email needs a link that works from
+      // a mail client. Prefixing the origin here would double it.
+      setInviteLink(data.inviteUrl);
       inviteForm.resetFields();
       setInviteOpen(false);
     }
