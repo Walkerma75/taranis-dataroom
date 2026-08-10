@@ -125,6 +125,56 @@ test('a successful submission takes a receipt reference, moves the files and ret
   assert.ok(pool.sql().includes('COMMIT'));
 });
 
+test('a submission queues the receipt and the Taranis notice inside its transaction', async (t) => {
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['FROM company_files\n       WHERE id = ANY', [stagedFile(FILE_1), stagedFile(FILE_2)]],
+    ["nextval('company_receipt_ref_seq')", [{ n: 42 }]],
+    ['INSERT INTO submission_batches', [{
+      id: 'batch-1',
+      receipt_ref: 'TRN-DD-2026-000042',
+      submitted_at: new Date('2026-08-06T10:00:00Z'),
+    }]],
+    ['SELECT id, ref, description FROM company_irl_items', [
+      { id: 'item-1', ref: '3.2', description: 'Audited accounts' },
+    ]],
+    ['INSERT INTO notification_outbox', [{ id: 'n-1' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/submit', {
+    method: 'POST', token: companyAdminToken(), body: { fileIds: [FILE_1, FILE_2] },
+  });
+  assert.equal(res.status, 201);
+
+  const queued = pool.calls.filter((c) => c.text.includes('INSERT INTO notification_outbox'));
+  assert.equal(queued.length, 2, 'expected the company receipt and the Taranis notice');
+
+  const [receipt, notice] = queued;
+  assert.equal(receipt.params[0], 'submission-receipt');
+  assert.equal(notice.params[0], 'submission-notification');
+  assert.equal(notice.params[1], 'admin@taraniscapital.com');
+
+  // The receipt restates every file, which is what makes it the formal record
+  // the approved wording tells the company to keep.
+  const payload = JSON.parse(receipt.params[2]);
+  assert.equal(payload.receipt_ref, 'TRN-DD-2026-000042');
+  assert.equal(payload.file_count, 2);
+  assert.equal(payload.files.length, 2);
+  assert.equal(payload.submitted_at_utc, '6 August 2026 at 10:00');
+
+  // Both rows are written BEFORE the commit. Queued after it, a process death
+  // in between would lose the only formal record of a submission the company
+  // has already been told succeeded.
+  const order = pool.sql();
+  const commitAt = order.indexOf('COMMIT');
+  const lastQueueAt = order.map((s, i) => (s.includes('notification_outbox') ? i : -1))
+    .filter((i) => i >= 0)
+    .pop();
+  assert.ok(lastQueueAt < commitAt, 'a notification was queued outside the transaction');
+});
+
 // ---------------------------------------------------------------------------
 // Superseding a replaced version (HANDOVER-CW010)
 // ---------------------------------------------------------------------------
@@ -472,6 +522,89 @@ test('a status change writes history and recomputes the item state', async (t) =
   assert.match(sql, /UPDATE company_irl_items SET state = \$2/);
   const update = pool.calls.find((c) => c.text.includes('UPDATE company_irl_items SET state'));
   assert.equal(update.params[1], 'attention_needed');
+});
+
+test('attention_needed emails the uploader and the company admin, and carries the note', async (t) => {
+  const pool = fakePool([
+    ['FROM company_files f\n     JOIN companies c', [{
+      id: FILE_1, company_id: COMPANY_A, irl_item_id: 'item-1', uploaded_by: 'user-7',
+      batch_id: 'batch-1', filename: 'accounts-2024.pdf',
+      upload_state: 'submitted', status: 'received', legal_name: 'Example Bio',
+    }]],
+    ['SELECT id, state, baseline_state', [{
+      id: 'item-1', state: 'received', baseline_state: 'outstanding',
+    }]],
+    ['SELECT upload_state, status, deleted_at FROM company_files', [
+      { upload_state: 'submitted', status: 'attention_needed', deleted_at: null },
+    ]],
+    // Deliberately selected by name: an internal note must never be in reach of
+    // a payload addressed to the counterparty.
+    ['SELECT ref, description FROM company_irl_items', [
+      { ref: '3.2', description: 'Audited accounts for the last three years' },
+    ]],
+    ['SELECT receipt_ref, submitted_at FROM submission_batches', [
+      { receipt_ref: 'TRN-DD-2026-000042', submitted_at: new Date('2026-08-06T10:00:00Z') },
+    ]],
+    ['FROM company_users cu\n       JOIN users u', [
+      { email: 'uploader@examplebio.com', display_name: 'Sam Patel' },
+      { email: 'admin@examplebio.com', display_name: 'Alex Fenn' },
+    ]],
+    ['INSERT INTO notification_outbox', [{ id: 'n-1' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company-files/${FILE_1}/status`, {
+    method: 'PATCH',
+    token: adminToken(),
+    body: { status: 'attention_needed', note: 'This is the 2024 file, we need 2025.' },
+  });
+  assert.equal(res.status, 200);
+
+  const queued = pool.calls.filter((c) => c.text.includes('INSERT INTO notification_outbox'));
+  assert.equal(queued.length, 2, 'the uploader and the company admin should each get a row');
+  assert.deepEqual(
+    queued.map((c) => c.params[1]),
+    ['uploader@examplebio.com', 'admin@examplebio.com']
+  );
+
+  // One row per address rather than one row with two, so suppression and the
+  // audit trail stay per-person and each is addressed by their own name.
+  const first = JSON.parse(queued[0].params[2]);
+  assert.equal(first.first_name, 'Sam');
+  assert.equal(JSON.parse(queued[1].params[2]).first_name, 'Alex');
+
+  assert.equal(queued[0].params[0], 'status-attention');
+  assert.equal(first.reviewer_note, 'This is the 2024 file, we need 2025.');
+  assert.equal(first.receipt_ref, 'TRN-DD-2026-000042');
+  assert.ok(first.item_url.endsWith('/company/items/item-1'));
+  assert.equal(first.internal_note, undefined);
+});
+
+test('a status change that is neither attention_needed nor completed emails nobody', async (t) => {
+  // 'received', 'in_review' and 'superseded' are internal progress the company
+  // can see in its workspace, and there is no approved template for them.
+  const pool = fakePool([
+    ['FROM company_files f\n     JOIN companies c', [{
+      id: FILE_1, company_id: COMPANY_A, irl_item_id: 'item-1',
+      upload_state: 'submitted', status: 'received', legal_name: 'Example Bio',
+    }]],
+    ['SELECT id, state, baseline_state', [{
+      id: 'item-1', state: 'received', baseline_state: 'outstanding',
+    }]],
+    ['SELECT upload_state, status, deleted_at FROM company_files', [
+      { upload_state: 'submitted', status: 'in_review', deleted_at: null },
+    ]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company-files/${FILE_1}/status`, {
+    method: 'PATCH', token: adminToken(), body: { status: 'in_review' },
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(pool.sql().some((s) => s.includes('notification_outbox')), false);
 });
 
 test('a status cannot be set on a file that has never been submitted', async (t) => {
@@ -837,10 +970,10 @@ test('an offboarded company cannot be reactivated through activate', async (t) =
 });
 
 // ---------------------------------------------------------------------------
-// Invitations issue a link, and send no email
+// Invitations are sent by the platform, and still return a fallback link
 // ---------------------------------------------------------------------------
 
-test('inviting a company user returns a link for an admin to send by hand', async (t) => {
+test('inviting a company user queues the invitation and returns a fallback link', async (t) => {
   const pool = fakePool([
     // Active: an invitation to anything else is refused by the guard below.
     ['SELECT * FROM companies WHERE id = $1', [{ id: COMPANY_A, legal_name: 'Example Bio', status: 'active' }]],
@@ -859,8 +992,18 @@ test('inviting a company user returns a link for an admin to send by hand', asyn
   });
 
   assert.equal(res.status, 201);
-  assert.match(res.body.inviteUrl, /^\/invite\/accept\?token=/);
-  assert.match(res.body.message, /No email has been sent/);
+  // Absolute since Phase 1b: the same link goes in the email, where a relative
+  // one would be dead.
+  assert.match(res.body.inviteUrl, /^https?:\/\/.+\/invite\/accept\?token=/);
+  assert.match(res.body.message, /sent to the invitee by email/);
+
+  // The invitation is queued in the SAME transaction as the invite row, so a
+  // rollback below it can never leave an email announcing an invitation that
+  // does not exist.
+  const queued = pool.calls.find((c) => c.text.includes('INSERT INTO notification_outbox'));
+  assert.ok(queued, 'the invitation was not queued');
+  assert.equal(queued.params[0], 'company-invite');
+  assert.equal(queued.params[1], 'contact@examplebio.com');
 
   // The email address is normalised before it reaches the users table.
   const insert = pool.calls.find((c) => c.text.includes('INSERT INTO users (email'));

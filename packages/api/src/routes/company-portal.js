@@ -11,8 +11,11 @@
  * $2`, so a guessed id from another company returns 404 rather than leaking the
  * existence of the row.
  *
- * Nothing in this file sends email. Phase 1a issues invite links for an admin
- * to send by hand (HANDOVER-CW004 §3 item 3).
+ * EMAIL. Phase 1b queues notifications through `services/notifications.js`.
+ * Every `queue()` call passes the transaction's `client`, so a message commits
+ * with the upload or submission it announces, and a rollback takes it with it.
+ * No handler here waits on SES: a company's upload must not fail because a
+ * third party is slow.
  */
 import { Router } from 'express';
 import multer from 'multer';
@@ -36,6 +39,92 @@ import {
   recomputeItemState,
   nextReceiptRef,
 } from '../services/companies.js';
+import {
+  queue,
+  adminRecipient,
+  firstNameOf,
+  formatBytes,
+  formatDateTimeUtc,
+  shortDescription,
+} from '../services/notifications.js';
+import { adminNominationUrl, adminReviewUrl, companyReceiptsUrl } from '../services/links.js';
+
+/**
+ * How a proposed company role reads in the nomination email. The stored values
+ * are enum-ish and would look like database internals in a message to a person.
+ */
+const COMPANY_ROLE_LABELS = {
+  company_admin: 'Company Administrator',
+  company_contributor: 'Contributor',
+  company_viewer: 'Viewer',
+};
+
+/**
+ * `{{domain_check_result}}`, in words.
+ *
+ * Whether the nominee's email domain matches the company's registered domains
+ * is the one signal an approver has that a nomination is what it claims to be,
+ * so it says which domain it checked rather than just yes or no. A company with
+ * no registered domains cannot be checked at all, and saying so is more use
+ * than a bare 'no'.
+ */
+function domainCheckResult(domainMatched, domain) {
+  if (domainMatched === null || domainMatched === undefined) {
+    return 'Not checked: no email domains are registered for this company';
+  }
+  return domainMatched
+    ? `Matched the company's registered domain (${domain})`
+    : `NO MATCH: ${domain} is not a registered domain for this company`;
+}
+
+/**
+ * The `ref` and description of one checklist item, for a notification.
+ *
+ * Scoped by company id like every other lookup in this file, even though the
+ * item id came from a row already proven to belong to this company: the rule is
+ * that no query here trusts an id it did not scope itself.
+ *
+ * Returns null for a file uploaded as additional material, which has no item.
+ */
+async function itemSummary(irlItemId, companyId) {
+  if (!irlItemId) return null;
+  const { rows: [item] } = await pool.query(
+    `SELECT ref, description FROM company_irl_items WHERE id = $1 AND company_id = $2`,
+    [irlItemId, companyId]
+  );
+  return item || null;
+}
+
+/**
+ * Queue the admin upload notification.
+ *
+ * Shared by the upload and the replace handlers, which announce the same event
+ * and differ only in whether the file has a predecessor.
+ *
+ * A failure here is logged and swallowed. Both call sites reach this AFTER the
+ * file row is committed and audited, so the upload has already succeeded; a
+ * 500 at this point would tell a company its upload failed when the bytes are
+ * safely in S3 and the row is in the database. The notification is the least
+ * important thing that happened in the request and must behave like it.
+ */
+async function queueUploadNotification(req, { files, itemRef }) {
+  try {
+    await queue(pool, {
+      template: 'upload-notification',
+      recipient: adminRecipient(),
+      payload: {
+        company_name: req.company.legalName,
+        uploader_name: req.user.name || req.user.email,
+        file_count: files.length,
+        item_ref_or_additional: itemRef || 'additional material',
+        files,
+        admin_review_url: adminReviewUrl(),
+      },
+    });
+  } catch (err) {
+    console.error('[company] Could not queue the upload notification:', err.message);
+  }
+}
 
 const stagingStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
@@ -212,18 +301,25 @@ router.post(
       return res.status(400).json({ error: 'A description is required for every file' });
     }
 
+    // Kept for the notification: which checklist item this upload answers.
+    // `ref` and `description` are selected here rather than re-queried later so
+    // the upload path still makes exactly one lookup.
+    let uploadedAgainst = null;
+
     try {
       // If an item was named, it must be this company's, and one the company
       // is allowed to see.
       if (irlItemId) {
         const { rows: [item] } = await pool.query(
-          `SELECT id, state FROM company_irl_items WHERE id = $1 AND company_id = $2`,
+          `SELECT id, state, ref, description FROM company_irl_items
+            WHERE id = $1 AND company_id = $2`,
           [irlItemId, req.company.id]
         );
         if (!item || item.state === 'held') {
           cleanupCompanyStaging(req.file.destination);
           return res.status(404).json({ error: 'Item not found' });
         }
+        uploadedAgainst = item;
       }
 
       const fileId = crypto.randomUUID();
@@ -286,6 +382,22 @@ router.post(
           scanBackend: stored.verdict.backend,
         },
         ip: req.ip,
+      });
+
+      // Per upload, not per day: decision 8 settled on per-event notifications
+      // with no digest (HANDOVER-C003 §5.5). This handler has no transaction of
+      // its own — the file row is a single INSERT — so the outbox row is
+      // written on the pool. It is queued after the row exists, so an admin can
+      // never be told about a file that failed to insert.
+      await queueUploadNotification(req, {
+        files: [{
+          filename: stored.filename,
+          size: formatBytes(stored.size),
+          item_ref: uploadedAgainst?.ref || '',
+          item_description_short: shortDescription(uploadedAgainst?.description),
+          description: description.trim(),
+        }],
+        itemRef: uploadedAgainst?.ref,
       });
 
       res.status(201).json(companyFileView(row));
@@ -386,6 +498,22 @@ router.post(
       });
 
       if (previous.irl_item_id) await recomputeItemState(previous.irl_item_id);
+
+      // A replacement is an upload as far as the review side is concerned: a
+      // new version has arrived and somebody needs to look at it. The version
+      // number rides in the description line so the notification does not read
+      // as a duplicate of the one announcing version 1.
+      const item = await itemSummary(previous.irl_item_id, req.company.id);
+      await queueUploadNotification(req, {
+        files: [{
+          filename: stored.filename,
+          size: formatBytes(stored.size),
+          item_ref: item?.ref || '',
+          item_description_short: shortDescription(item?.description),
+          description: `${description.trim()} (version ${row.version})`,
+        }],
+        itemRef: item?.ref,
+      });
 
       res.status(201).json(companyFileView(row));
     } catch (err) {
@@ -613,6 +741,61 @@ router.post('/submit', requireCompanyRole('company_admin'), async (req, res) => 
       retired.push({ ...previous, replacedBy: f.id, replacedByVersion: f.version });
     }
 
+    // The receipt and the notice to Taranis, both inside the transaction.
+    //
+    // This is the message that matters most on the company side: the approved
+    // wording calls it "the formal record of the submission" and tells the
+    // company to keep it with their transaction papers. Queueing it here means
+    // it cannot describe a submission that rolled back, and cannot be lost if
+    // the process dies immediately after committing one.
+    const submittedItemIds = [...new Set(files.map((f) => f.irl_item_id).filter(Boolean))];
+    const { rows: itemRows } = submittedItemIds.length
+      ? await client.query(
+        `SELECT id, ref, description FROM company_irl_items
+          WHERE id = ANY($1::uuid[]) AND company_id = $2`,
+        [submittedItemIds, req.company.id]
+      )
+      : { rows: [] };
+    const itemsById = new Map(itemRows.map((i) => [i.id, i]));
+
+    const receiptFiles = files.map((f) => ({
+      filename: f.filename,
+      item_ref: itemsById.get(f.irl_item_id)?.ref || '',
+      item_description_short: shortDescription(itemsById.get(f.irl_item_id)?.description),
+      description: f.description,
+    }));
+
+    await queue(client, {
+      template: 'submission-receipt',
+      // The submitting company_admin only. The approved template header also
+      // names opted-in company users, but no notification preference exists in
+      // the schema and none is scoped for Phase 1b; the cc moves with
+      // preferences to Phase 2. Raised for Cowork in HANDOVER-C011 §3.2.
+      recipient: req.user.email,
+      payload: {
+        first_name: firstNameOf(req.user.name),
+        company_name: req.company.legalName,
+        submitted_at_utc: formatDateTimeUtc(batch.submitted_at),
+        receipt_ref: receiptRef,
+        file_count: files.length,
+        files: receiptFiles,
+        company_receipts_url: companyReceiptsUrl(),
+      },
+    });
+
+    await queue(client, {
+      template: 'submission-notification',
+      recipient: adminRecipient(),
+      payload: {
+        submitter_name: req.user.name || req.user.email,
+        company_name: req.company.legalName,
+        receipt_ref: receiptRef,
+        file_count: files.length,
+        item_count: submittedItemIds.length,
+        admin_review_url: adminReviewUrl(),
+      },
+    });
+
     await client.query('COMMIT');
 
     // Item states are derived outside the transaction: they are a projection of
@@ -662,8 +845,9 @@ router.post('/submit', requireCompanyRole('company_admin'), async (req, res) => 
       ip: req.ip,
     });
 
-    // No email in Phase 1a. The receipt is returned here and is available again
-    // from GET /company/receipts; Taranis sees the batch on the review queue.
+    // The receipt is also emailed (queued above, inside the transaction) and is
+    // available again from GET /company/receipts; Taranis sees the batch on the
+    // review queue and is notified per submission.
     res.status(201).json({
       receiptRef: batch.receipt_ref,
       submittedAt: batch.submitted_at,
@@ -973,6 +1157,23 @@ router.post('/nominations', requireCompanyRole('company_admin'), async (req, res
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'That person is already on your team' });
     }
+
+    // Tell Taranis there is something waiting. Before Phase 1b a nomination sat
+    // in the pipeline until somebody happened to look at the nominations list,
+    // which is the gap HANDOVER-C006 found and the Users page half-closed.
+    await queue(client, {
+      template: 'nomination-pending',
+      recipient: adminRecipient(),
+      payload: {
+        nominee_name: displayName.trim(),
+        nominee_email: normalised,
+        nominator_name: req.user.name || req.user.email,
+        company_name: req.company.legalName,
+        proposed_role: COMPANY_ROLE_LABELS[companyRole || 'company_contributor'],
+        domain_check_result: domainCheckResult(domainMatched, domain),
+        admin_nomination_url: adminNominationUrl(req.company.id),
+      },
+    });
 
     await client.query('COMMIT');
 
