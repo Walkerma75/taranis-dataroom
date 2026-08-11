@@ -18,6 +18,7 @@
  *   get(key)    -> Promise<{ body: Readable, contentType, contentLength }>
  *   remove(key) -> Promise<void>
  *   exists(key) -> Promise<boolean>
+ *   list(prefix)-> Promise<string[]>
  *   kind        -> 's3' | 'local' | 'memory'
  *   describe()  -> string, for startup logging
  *
@@ -138,6 +139,32 @@ export class S3Storage {
     const { DeleteObjectCommand } = this.commands;
     await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
+
+  /**
+   * Every key under a prefix, following the continuation token to the end.
+   *
+   * Added for the go-live reset, which has to be able to say the bucket is
+   * empty rather than that the objects it knew about are gone. A truncated
+   * first page would have made it report success over whatever was left, which
+   * is why this pages rather than taking the first thousand.
+   *
+   * The task role holds `ListBucket` on the bucket already.
+   */
+  async list(prefix = '') {
+    const { ListObjectsV2Command } = this.commands;
+    const keys = [];
+    let continuationToken;
+    do {
+      const out = await this.client.send(new ListObjectsV2Command({
+        Bucket: this.bucket,
+        ...(prefix ? { Prefix: prefix } : {}),
+        ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+      }));
+      for (const object of out.Contents || []) keys.push(object.Key);
+      continuationToken = out.IsTruncated ? out.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return keys;
+  }
 }
 
 /**
@@ -221,6 +248,21 @@ export class LocalStorage {
     const target = this.pathFor(key);
     if (fs.existsSync(target)) fs.unlinkSync(target);
   }
+
+  /** Keys under a prefix, as forward-slash paths relative to the root. */
+  async list(prefix = '') {
+    const keys = [];
+    const walk = (dir, base) => {
+      if (!fs.existsSync(dir)) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const key = base ? `${base}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) walk(path.join(dir, entry.name), key);
+        else if (key.startsWith(prefix)) keys.push(key);
+      }
+    };
+    walk(this.root, '');
+    return keys;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +301,10 @@ export class MemoryStorage {
 
   async remove(key) {
     this.objects.delete(key);
+  }
+
+  async list(prefix = '') {
+    return [...this.objects.keys()].filter((key) => key.startsWith(prefix)).sort();
   }
 
   /** Test helper — the raw bytes, for byte-for-byte assertions. */
