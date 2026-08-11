@@ -978,7 +978,7 @@ test('inviting a company user queues the invitation and returns a fallback link'
     // Active: an invitation to anything else is refused by the guard below.
     ['SELECT * FROM companies WHERE id = $1', [{ id: COMPANY_A, legal_name: 'Example Bio', status: 'active' }]],
     ['SELECT id, role FROM users WHERE email', []],
-    ['INSERT INTO users (email, display_name, role, status)', [{ id: 'user-9' }]],
+    ['INSERT INTO users (email, display_name, role, status)', [{ id: 'user-9', display_name: 'A Contact' }]],
     ['INSERT INTO company_users', [{ id: 'm-9', company_role: 'company_admin', nominated_by: null }]],
     ['INSERT INTO invites', { rows: [] }],
   ]);
@@ -992,6 +992,8 @@ test('inviting a company user queues the invitation and returns a fallback link'
   });
 
   assert.equal(res.status, 201);
+  assert.equal(res.body.existingAccount, false, 'a new account was created');
+  assert.equal(res.body.displayName, 'A Contact');
   // Absolute since Phase 1b: the same link goes in the email, where a relative
   // one would be dead.
   assert.match(res.body.inviteUrl, /^https?:\/\/.+\/invite\/accept\?token=/);
@@ -1011,6 +1013,162 @@ test('inviting a company user queues the invitation and returns a fallback link'
   // The invite is created with role 'company'.
   const invite = pool.calls.find((c) => c.text.includes('INSERT INTO invites'));
   assert.match(invite.text, /'company'/);
+});
+
+// ---------------------------------------------------------------------------
+// An existing account keeps its own name (HANDOVER-CW012 §3.4)
+// ---------------------------------------------------------------------------
+
+/** The world in which `email` already belongs to a company account. */
+function existingUserPool(displayName = 'Rhys Walker') {
+  return fakePool([
+    ['SELECT * FROM companies WHERE id = $1', [{ id: COMPANY_A, legal_name: 'Example Bio', status: 'active' }]],
+    ['SELECT id, role FROM users WHERE email', [{ id: 'user-7', role: 'company' }]],
+    // ON CONFLICT DO NOTHING returns no row when the address is already taken.
+    ['INSERT INTO users (email, display_name, role, status)', []],
+    ['SELECT id, display_name FROM users WHERE email', [{ id: 'user-7', display_name: displayName }]],
+    ['INSERT INTO company_users', [{ id: 'm-7', company_role: 'company_admin', nominated_by: null }]],
+    ['INSERT INTO invites', { rows: [] }],
+  ]);
+}
+
+test('inviting an address that already has an account does not rename it', async (t) => {
+  const pool = existingUserPool('Rhys Walker');
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/users`, {
+    method: 'POST',
+    token: adminToken(),
+    body: { email: 'rhys@example.com', displayName: 'Somebody Else', companyRole: 'company_admin' },
+  });
+
+  assert.equal(res.status, 201);
+  assert.equal(res.body.existingAccount, true);
+  assert.equal(res.body.displayName, 'Rhys Walker');
+
+  // The insert must not carry an UPDATE of the name. Before CW012 it did, so
+  // inviting a known address silently renamed that person.
+  const insert = pool.calls.find((c) => c.text.includes('INSERT INTO users (email'));
+  assert.match(insert.text, /ON CONFLICT \(email\) DO NOTHING/);
+  assert.ok(
+    !/DO UPDATE SET display_name/.test(insert.text),
+    'an existing account must not be renamed by an invitation'
+  );
+});
+
+test('the invitation greets the name on the account, not the one typed', async (t) => {
+  const pool = existingUserPool('Rhys Walker');
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  await server.request(`/companies/${COMPANY_A}/users`, {
+    method: 'POST',
+    token: adminToken(),
+    body: { email: 'rhys@example.com', displayName: 'Somebody Else' },
+  });
+
+  const queued = pool.calls.find((c) => c.text.includes('INSERT INTO notification_outbox'));
+  const payload = JSON.parse(queued.params[2]);
+  assert.equal(payload.first_name, 'Rhys', 'the greeting comes from the stored name');
+});
+
+test('GET /companies/:id/users/lookup reports an existing account and its membership', async (t) => {
+  const pool = fakePool([
+    ['LEFT JOIN company_users cu ON cu.user_id = u.id', [{
+      id: 'user-7', display_name: 'Rhys Walker', role: 'company', status: 'active',
+      company_id: COMPANY_A, company_role: 'company_admin', deactivated_at: null,
+      company_name: 'Example Bio',
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(
+    `/companies/${COMPANY_A}/users/lookup?email=Rhys%40Example.com`,
+    { token: adminToken() }
+  );
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.exists, true);
+  assert.equal(res.body.displayName, 'Rhys Walker');
+  assert.equal(res.body.blocked, null);
+  assert.equal(res.body.membership.thisCompany, true);
+  assert.equal(res.body.membership.companyName, 'Example Bio');
+
+  // Looked up on the normalised address, or a capitalised one would miss.
+  const lookup = pool.calls.find((c) => c.text.includes('LEFT JOIN company_users'));
+  assert.equal(lookup.params[0], 'rhys@example.com');
+});
+
+test('the lookup flags a fund-side account as blocked before anything is created', async (t) => {
+  const pool = fakePool([
+    ['LEFT JOIN company_users cu ON cu.user_id = u.id', [{
+      id: 'user-3', display_name: 'An Investor', role: 'investor', status: 'active',
+      company_id: null, company_role: null, deactivated_at: null, company_name: null,
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(
+    `/companies/${COMPANY_A}/users/lookup?email=investor@example.com`,
+    { token: adminToken() }
+  );
+
+  assert.equal(res.body.fundSideAccount, true);
+  assert.match(res.body.blocked, /fund-side account/);
+  assert.equal(res.body.membership, null);
+});
+
+test('the lookup says nothing about an address with no account', async (t) => {
+  const server = await startTestServer(MOUNTS, fakePool([]));
+  t.after(() => server.close());
+
+  const res = await server.request(
+    `/companies/${COMPANY_A}/users/lookup?email=nobody@example.com`,
+    { token: adminToken() }
+  );
+  assert.deepEqual(res.body, { exists: false });
+});
+
+test('the lookup needs an email, and is admin only', async (t) => {
+  const server = await startTestServer(MOUNTS, fakePool([
+    ['SELECT level FROM company_reviewers', [{ level: 'reviewer' }]],
+  ]));
+  t.after(() => server.close());
+
+  const noEmail = await server.request(`/companies/${COMPANY_A}/users/lookup`, { token: adminToken() });
+  assert.equal(noEmail.status, 400);
+
+  // A named reviewer on this very company still cannot ask about an address.
+  const reviewer = await server.request(
+    `/companies/${COMPANY_A}/users/lookup?email=rhys@example.com`,
+    { token: tokenFor({ role: 'advisor', sub: 'adv-1' }) }
+  );
+  assert.equal(reviewer.status, 403);
+
+  const companyUser = await server.request(
+    `/companies/${COMPANY_A}/users/lookup?email=rhys@example.com`,
+    { token: companyAdminToken() }
+  );
+  assert.equal(companyUser.status, 403);
+});
+
+test('the lookup path is not swallowed by GET /companies/:id/users', async (t) => {
+  const pool = fakePool([
+    ['LEFT JOIN company_users cu ON cu.user_id = u.id', []],
+    // If routing fell through to the listing, this handler would answer instead.
+    ['FROM company_users cu\n       JOIN users u', [{ id: 'm-1', user_id: 'u-1' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(
+    `/companies/${COMPANY_A}/users/lookup?email=nobody@example.com`,
+    { token: adminToken() }
+  );
+  assert.deepEqual(res.body, { exists: false }, 'the lookup answered, not the listing');
 });
 
 test('a fund-side account is never converted into a company account', async (t) => {

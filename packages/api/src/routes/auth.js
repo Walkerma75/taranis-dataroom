@@ -255,6 +255,7 @@ router.get('/me', requireAuth, async (req, res) => {
         : {}),
     });
   } catch (err) {
+    console.error('[auth] Me error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -600,6 +601,7 @@ router.post('/change-password', requireAuth, async (req, res) => {
 
     res.json({ message: 'Password changed. Please log in again.' });
   } catch (err) {
+    console.error('[auth] Change password error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

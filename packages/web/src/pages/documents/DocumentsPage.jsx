@@ -273,12 +273,6 @@ export default function DocumentsPage() {
     },
   ];
 
-  // Determine if the viewed doc can be previewed in-browser
-  const canPreview = viewDoc && (
-    viewDoc.mimeType?.includes('pdf') ||
-    viewDoc.mimeType?.includes('image')
-  );
-
   const handleFundFilterChange = (v) => {
     setFilterFund(v || null);
     if (v) {

@@ -50,6 +50,7 @@ router.get('/', requireRole('admin'), async (req, res) => {
       updatedAt: r.updated_at,
     })));
   } catch (err) {
+    console.error('[users] List error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -95,6 +96,7 @@ router.get('/:id', requireRole('admin'), async (req, res) => {
       })),
     });
   } catch (err) {
+    console.error('[users] Update error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -134,6 +136,7 @@ router.patch('/:id', requireRole('admin'), async (req, res) => {
 
     res.json(user);
   } catch (err) {
+    console.error('[users] Delete error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

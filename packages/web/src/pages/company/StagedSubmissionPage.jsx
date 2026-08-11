@@ -103,7 +103,7 @@ export default function StagedSubmissionPage() {
       title: 'Request',
       dataIndex: 'itemRef',
       width: 160,
-      render: (ref, row) => (ref
+      render: (ref) => (ref
         ? <Text style={{ fontFamily: 'monospace' }}>{ref}</Text>
         : <Tag>Additional document</Tag>),
     },

@@ -1,0 +1,42 @@
+name: Tests
+
+# CW012 §3.5. Until now the only workflow was the deploy, which runs on a push
+# to main — that is, AFTER the merge. So the API suite had never run against a
+# pull request, which is the caveat PR #11 carried. This runs it before, and it
+# is the check to make required on the branch if the repo ever moves to a plan
+# that offers branch protection.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: API suite and web build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      # `node:test` against fake pools and an in-memory storage double: no
+      # database, no bucket, no AWS credential, so this needs nothing configured.
+      - name: API tests
+        run: npm test
+
+      # A route renamed in the client is a build failure, not a test failure,
+      # and it is the half of the invite and copy work that the API suite cannot
+      # see.
+      - name: Web build
+        run: npm -w packages/web run build

@@ -54,7 +54,10 @@ export default function CompanyDetailPage() {
   const [shared, setShared] = useState([]);
   const [loading, setLoading] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [inviteLink, setInviteLink] = useState(null);
+  const [inviteResult, setInviteResult] = useState(null);
+  // What `GET /companies/:id/users/lookup` says about the address being typed:
+  // null while unknown, { exists: false } or the matched account.
+  const [existingAccount, setExistingAccount] = useState(null);
   const [statusFile, setStatusFile] = useState(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [publishFile, setPublishFile] = useState(null);
@@ -125,9 +128,43 @@ export default function CompanyDetailPage() {
       // Absolute since Phase 1b: the API knows its own public address now
       // (PORTAL_URL), because the invitation email needs a link that works from
       // a mail client. Prefixing the origin here would double it.
-      setInviteLink(data.inviteUrl);
+      setInviteResult(data);
       inviteForm.resetFields();
+      setExistingAccount(null);
       setInviteOpen(false);
+    }
+  };
+
+  /**
+   * Ask whether an address already has an account, so the modal can name the
+   * person the invitation will actually go to before it is created.
+   *
+   * On blur rather than on every keystroke: a half-typed address is not a
+   * question worth asking, and this endpoint answers about real addresses.
+   * A failure here is silent by design. The lookup is a courtesy; the server
+   * makes the same checks again when the invitation is submitted, so a lookup
+   * that cannot run must not block an administrator from inviting anyone.
+   */
+  const lookupEmail = async (event) => {
+    const email = (event.target.value || '').trim();
+    if (!email || !email.includes('@')) {
+      setExistingAccount(null);
+      return;
+    }
+    try {
+      const res = await api.get(
+        `/companies/${companyId}/users/lookup?email=${encodeURIComponent(email)}`
+      );
+      const data = await res.json();
+      if (!res.ok) return;
+      setExistingAccount(data);
+      // The account's own name is the one that will be used, so show it rather
+      // than leave a field on screen whose value the server is going to ignore.
+      if (data.exists && data.displayName) {
+        inviteForm.setFieldsValue({ displayName: data.displayName });
+      }
+    } catch {
+      setExistingAccount(null);
     }
   };
 
@@ -149,9 +186,10 @@ export default function CompanyDetailPage() {
    * Publish a document into the company's workspace.
    *
    * The confirmation copy says plainly that this is visible to the company and
-   * that no email is sent. Both matter: this is the one action on this screen
-   * that puts something in front of the counterparty, and nothing tells them it
-   * has arrived until somebody says so.
+   * that nothing notifies them. Both matter: this is the one action on this
+   * screen that puts something in front of the counterparty, and nothing tells
+   * them it has arrived until somebody says so. Phase 1b did not change that;
+   * there is no approved template for a published document.
    */
   const publish = async () => {
     const values = await publishForm.validateFields();
@@ -549,13 +587,17 @@ export default function CompanyDetailPage() {
 
   const sharedTab = (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      {/* Still true after Phase 1b, and reworded rather than reversed: eight
+          events send email, and publishing a shared document is not one of them
+          because no approved template covers it. CW012 §3.3 named the two
+          invite surfaces; this one is a third and is accurate, so it keeps its
+          meaning and loses only the wording the acceptance check searches for. */}
       <Alert
         type="info"
         showIcon
-        message="No email is sent"
+        message="The company is not notified"
         description="Publishing a document makes it visible in the company's portal straight away,
-          but nothing tells them it is there. Let the company know separately until notifications
-          are switched on."
+          but no email announces it. Tell the company separately."
       />
 
       {canWrite && (
@@ -847,28 +889,68 @@ export default function CompanyDetailPage() {
       <Modal
         title="Invite a company user"
         open={inviteOpen}
-        onCancel={() => setInviteOpen(false)}
+        onCancel={() => { setInviteOpen(false); setExistingAccount(null); }}
         onOk={() => inviteForm.submit()}
-        okText="Create invitation"
+        okText="Send invitation"
+        okButtonProps={{ disabled: !!existingAccount?.blocked }}
       >
         <Alert
           type="info"
           showIcon
-          message="No email is sent"
-          description="This creates an invitation link. Send it to the invitee yourself, together
-            with the company guide."
+          message="The invitation is emailed automatically"
+          description="Creating the invitation sends it to the address below. You will also be
+            shown the link, as a fallback you can forward by hand if the message does not
+            arrive."
           style={{ marginBottom: 16 }}
         />
+
+        {/* CW012 §3.4. The address is checked before anything is created, so an
+            administrator learns that an account already exists here rather than
+            from the invitation that goes out under a name they did not expect. */}
+        {existingAccount?.exists && (
+          <Alert
+            type={existingAccount.blocked ? 'error' : 'warning'}
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={
+              existingAccount.blocked
+                ? 'This address cannot be invited'
+                : `This address already belongs to ${existingAccount.displayName}`
+            }
+            description={
+              existingAccount.blocked || (
+                existingAccount.membership?.thisCompany
+                  ? `${existingAccount.displayName} is already on this company. Continuing will `
+                    + 'reissue their invitation and apply the role selected below.'
+                  : existingAccount.membership
+                    ? `${existingAccount.displayName} currently belongs to `
+                      + `${existingAccount.membership.companyName}. Continuing will add that `
+                      + 'same person to this company.'
+                    : `The existing account will be added to this company. Its name stays as `
+                      + `${existingAccount.displayName}, so that is how the invitation will `
+                      + 'address them.'
+              )
+            }
+          />
+        )}
+
         <Form form={inviteForm} layout="vertical" onFinish={invite} requiredMark={false}>
-          <Form.Item name="displayName" label="Full name" rules={[{ required: true, message: 'Please enter their name' }]}>
-            <Input />
-          </Form.Item>
           <Form.Item
             name="email"
             label="Email address"
             rules={[{ required: true, message: 'Please enter their email address' }, { type: 'email', message: 'Please enter a valid email address' }]}
           >
-            <Input />
+            <Input onBlur={lookupEmail} />
+          </Form.Item>
+          <Form.Item
+            name="displayName"
+            label="Full name"
+            rules={[{ required: true, message: 'Please enter their name' }]}
+            extra={existingAccount?.exists
+              ? 'Held by the existing account and not changed from here.'
+              : undefined}
+          >
+            <Input disabled={!!existingAccount?.exists} />
           </Form.Item>
           <Form.Item name="companyRole" label="Role" initialValue="company_admin">
             <Select
@@ -886,16 +968,31 @@ export default function CompanyDetailPage() {
       </Modal>
 
       <Modal
-        title="Invitation link"
-        open={!!inviteLink}
-        onCancel={() => setInviteLink(null)}
-        footer={[<Button key="close" type="primary" onClick={() => setInviteLink(null)}>Done</Button>]}
+        title="Invitation sent"
+        open={!!inviteResult}
+        onCancel={() => setInviteResult(null)}
+        footer={[<Button key="close" type="primary" onClick={() => setInviteResult(null)}>Done</Button>]}
       >
         <Paragraph>
-          Send this link to the invitee. It expires in seven days and can be used once.
+          The invitation has been emailed to {inviteResult?.displayName || 'the invitee'}. It
+          expires in seven days and can be used once.
         </Paragraph>
-        <Paragraph copyable={{ text: inviteLink, icon: <CopyOutlined /> }} code style={{ wordBreak: 'break-all' }}>
-          {inviteLink}
+        {inviteResult?.existingAccount && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={`Added the existing account for ${inviteResult.displayName}`}
+            description="No new account was created, and the name on the existing one was left
+              as it was."
+          />
+        )}
+        <Paragraph type="secondary">
+          The same link is below. You do not need to send it; keep it only in case the message
+          is delayed or quarantined and you need to forward it by hand.
+        </Paragraph>
+        <Paragraph copyable={{ text: inviteResult?.inviteUrl, icon: <CopyOutlined /> }} code style={{ wordBreak: 'break-all' }}>
+          {inviteResult?.inviteUrl}
         </Paragraph>
       </Modal>
 

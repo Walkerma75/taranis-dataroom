@@ -308,6 +308,7 @@ router.delete('/:id', requireRole('admin'), async (req, res) => {
     await logAudit({ action: 'document.archived', userId: req.user.sub, resource: 'document', resourceId: doc.id, ip: req.ip });
     res.json({ message: 'Document archived' });
   } catch (err) {
+    console.error('[documents] Archive error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

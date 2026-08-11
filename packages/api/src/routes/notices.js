@@ -36,6 +36,7 @@ router.get('/', async (req, res) => {
 
     res.json(rows);
   } catch (err) {
+    console.error('[notices] List error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -52,6 +53,7 @@ router.post('/', requireRole('admin'), async (req, res) => {
     );
     res.status(201).json(notice);
   } catch (err) {
+    console.error('[notices] Read error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -132,6 +134,7 @@ router.post('/:id/read', async (req, res) => {
     );
     res.json({ message: 'Marked as read' });
   } catch (err) {
+    console.error('[notices] Recipients error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

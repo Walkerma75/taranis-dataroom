@@ -30,6 +30,7 @@ import companyRoutes, {
   irlTemplatesRouter,
 } from './routes/companies.js';
 import companyPortalRoutes from './routes/company-portal.js';
+import maintenanceRoutes from './routes/maintenance.js';
 
 const app = express();
 const PORT = process.env.API_PORT || 4000;
@@ -110,6 +111,10 @@ app.use('/companies', companyRoutes);
 app.use('/company-files', companyFilesRouter);
 app.use('/review-queue', reviewQueueRouter);
 app.use('/irl-templates', irlTemplatesRouter);
+
+// Operator-only actions that need the task's own credentials (see the module
+// header for why these are not scripts). Admin-gated inside the router.
+app.use('/maintenance', maintenanceRoutes);
 
 // ---------------------------------------------------------------------------
 // Error handler

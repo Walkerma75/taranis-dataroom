@@ -33,7 +33,6 @@ import { generateInviteToken, hashToken } from '../services/auth.js';
 import {
   queue,
   queueEach,
-  adminRecipient,
   firstNameOf,
   formatDate,
   formatDateTimeUtc,
@@ -43,7 +42,6 @@ import {
   inviteUrl as buildInviteUrl,
   itemUrl,
   workspaceUrl,
-  adminReviewUrl,
 } from '../services/links.js';
 import {
   canActivate,
@@ -602,15 +600,83 @@ router.get('/:id/users', requireCompanyAccess(), async (req, res) => {
 });
 
 /**
+ * GET /companies/:id/users/lookup?email=...
+ *
+ * Whether an email address already belongs to an account, so the invite modal
+ * can say so BEFORE anything is created rather than leave the administrator to
+ * discover it from the invitation that goes out (HANDOVER-CW012 §3.4).
+ *
+ * Says only whether an account exists and, when it does, the name it holds.
+ * That is what the inviter needs in order to recognise the person; it is not a
+ * user-search endpoint, it answers one address at a time, and it is admin-only
+ * for the same reason `requireCompanyAccess` answers 404 rather than 403: an
+ * endpoint that confirms addresses is one that can be asked about addresses.
+ */
+router.get('/:id/users/lookup', requireRole('admin'), async (req, res) => {
+  const email = String(req.query.email || '').toLowerCase().trim();
+  if (!email) return res.status(400).json({ error: 'An email address is required' });
+
+  try {
+    const { rows: [user] } = await pool.query(
+      `SELECT u.id, u.display_name, u.role, u.status,
+              cu.company_id, cu.company_role, cu.deactivated_at,
+              c.legal_name AS company_name
+         FROM users u
+         LEFT JOIN company_users cu ON cu.user_id = u.id
+         LEFT JOIN companies c ON c.id = cu.company_id
+        WHERE u.email = $1
+        ORDER BY cu.created_at
+        LIMIT 1`,
+      [email]
+    );
+
+    if (!user) return res.json({ exists: false });
+
+    // A fund-side account is the refusal the invite handler already makes; the
+    // modal can now make it before the administrator has typed anything else.
+    const fundSide = user.role !== 'company';
+    res.json({
+      exists: true,
+      displayName: user.display_name,
+      accountStatus: user.status,
+      fundSideAccount: fundSide,
+      blocked: fundSide
+        ? 'That email address already belongs to a Taranis fund-side account.'
+        : null,
+      membership: user.company_id
+        ? {
+            companyId: user.company_id,
+            companyName: user.company_name,
+            companyRole: user.company_role,
+            active: !user.deactivated_at,
+            thisCompany: user.company_id === req.params.id,
+          }
+        : null,
+    });
+  } catch (err) {
+    console.error('[companies] User lookup error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
  * POST /companies/:id/users
  *
  * Invites a Primary Contact, or approves a nomination the company made. Either
- * way it issues an invite link on the existing `invites` flow and returns it
- * for an admin to send by hand. NO EMAIL IS SENT: that is Phase 1b.
+ * way it creates the invitation, queues the invitation email, and returns the
+ * link as a fallback for manual forwarding.
  *
  * ACTIVE ONLY. Both of those paths run through here, so one guard covers the
  * direct invitation and the nomination approval alike. See `canInviteUsers`
  * for why an invitation before activation is worse than no invitation at all.
+ *
+ * AN EXISTING ACCOUNT KEEPS ITS OWN NAME. Until CW012 this wrote the typed name
+ * over whatever the account already held, so inviting a known address silently
+ * renamed that person, and the invitation greeted them by the inviter's version
+ * of their name rather than their own. Now the stored name wins and the
+ * greeting is built from it, so the message a counterparty receives always
+ * matches the account it is about. `GET /:id/users/lookup` is what lets the
+ * modal show this before the administrator commits to it.
  */
 router.post('/:id/users', requireRole('admin'), async (req, res) => {
   const { email, displayName, companyRole, isPrimary } = req.body;
@@ -659,13 +725,20 @@ router.post('/:id/users', requireRole('admin'), async (req, res) => {
       });
     }
 
-    const { rows: [user] } = await client.query(
+    // DO NOTHING, not DO UPDATE: an account's name belongs to the account
+    // holder, not to whoever last typed it into an invite modal. `RETURNING id`
+    // yields no row when the conflict is skipped, so the existing row is read
+    // back explicitly and its own name is what the invitation uses.
+    const { rows: [inserted] } = await client.query(
       `INSERT INTO users (email, display_name, role, status)
        VALUES ($1, $2, 'company', 'invited')
-       ON CONFLICT (email) DO UPDATE SET display_name = EXCLUDED.display_name
-       RETURNING id`,
+       ON CONFLICT (email) DO NOTHING
+       RETURNING id, display_name`,
       [normalised, displayName.trim()]
     );
+    const user = inserted || (await client.query(
+      `SELECT id, display_name FROM users WHERE email = $1`, [normalised]
+    )).rows[0];
 
     // A user already nominated by the company has a membership row waiting for
     // approval; this both approves it and issues the invitation.
@@ -705,7 +778,9 @@ router.post('/:id/users', requireRole('admin'), async (req, res) => {
       template: 'company-invite',
       recipient: normalised,
       payload: {
-        first_name: firstNameOf(displayName),
+        // The stored name, so the greeting matches the account rather than
+        // whatever was typed into the modal for an address already in use.
+        first_name: firstNameOf(user.display_name),
         company_name: company.legal_name,
         invite_url: buildInviteUrl(token),
         invite_expiry_date: formatDate(expiresAt),
@@ -733,6 +808,10 @@ router.post('/:id/users', requireRole('admin'), async (req, res) => {
       message: 'Invitation created and sent to the invitee by email. The link below is '
              + 'a fallback if the message does not arrive; it is the same one-time link.',
       userId: user.id,
+      // What the invitation was actually addressed to. When an account already
+      // existed this is its own name, not the one typed, and the dialog says so.
+      displayName: user.display_name,
+      existingAccount: !inserted,
       inviteUrl: buildInviteUrl(token),
       expiresAt,
     });
@@ -862,6 +941,7 @@ router.delete('/:id/reviewers/:userId', requireRole('admin'), async (req, res) =
 
     res.json({ message: 'Assignment removed' });
   } catch (err) {
+    console.error('[companies] Remove reviewer error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -881,6 +961,7 @@ router.get('/:id/irl-items', requireCompanyAccess(), async (req, res) => {
     );
     res.json(rows.map((i) => ({ ...i, submitted_files: Number(i.submitted_files) })));
   } catch (err) {
+    console.error('[companies] IRL items error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1728,7 +1809,7 @@ async function statusRecipients(companyId, uploadedBy) {
  * and audited by the time this runs; a reviewer must not see their own action
  * fail because a notification could not be queued.
  */
-async function queueStatusNotification(client, { req, file, status, note }) {
+async function queueStatusNotification(client, { file, status, note }) {
   try {
     const { rows: [item] } = file.irl_item_id
       ? await client.query(
@@ -1868,7 +1949,7 @@ companyFilesRouter.patch('/:fileId/status', async (req, res) => {
     // are internal progress that a company can see in its workspace and does
     // not need an email about, and there is no approved template for them.
     if (status === 'attention_needed' || status === 'completed') {
-      await queueStatusNotification(pool, { req, file, status, note });
+      await queueStatusNotification(pool, { file, status, note });
     }
 
     await logAudit({
