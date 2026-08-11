@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "The shape HANDOVER-C012 §3.2 asks Cowork for. One object per file.",
+    "",
+    "  path        relative to --root, which defaults to this file's own directory.",
+    "              Forward or backslashes, no leading slash, no '..'.",
+    "  fund        the fund SLUG as the platform holds it, not the folder name.",
+    "              Run `npm run import:fund-docs -- --list` to print the real ones.",
+    "  category    one of the seven, verbatim, including the spaces in",
+    "              'Pitch Deck / Presentation'.",
+    "  title       what an investor sees in the document list. This plus fund and",
+    "              category is the identity used to skip a file already present, so",
+    "              a title edited between runs uploads a second copy.",
+    "  description optional, shown under the title.",
+    "",
+    "Keys beginning with an underscore are ignored, so this block may stay in a",
+    "real manifest.",
+    "",
+    "The seven categories: Overview, Private Placement Memorandum, Legal Documents,",
+    "Financials, Technical, Correspondence, Pitch Deck / Presentation.",
+    "CW012 §3.2 said nine; nine was the pre-migration-006 count and two were merged",
+    "away. See HANDOVER-C012 §4."
+  ],
+  "source": "Documents/Taranis Fund Info/Final Documents Ready for Dataroom Upload",
+  "files": [
+    {
+      "path": "BioTech_KSA_PPM_S01_Executive_Summary.pdf",
+      "fund": "biotech-ksa",
+      "category": "Private Placement Memorandum",
+      "title": "PPM Section 1: Executive Summary"
+    },
+    {
+      "path": "BioTech_KSA_Financials_Taranis_BioTech_Fund_Financial_Model_v3_11May2026.xlsx",
+      "fund": "biotech-ksa",
+      "category": "Financials",
+      "title": "Biotech Fund Financial Model v3",
+      "description": "11 May 2026"
+    },
+    {
+      "path": "BioTech_KSA_Investor_Deck_Taranis_Biotech_Growth_Fund_Pitch_Deck_TC110226-5.pdf",
+      "fund": "biotech-ksa",
+      "category": "Pitch Deck / Presentation",
+      "title": "Biotech Growth Fund Investor Deck"
+    }
+  ]
+}

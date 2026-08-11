@@ -69,6 +69,7 @@ router.get('/actions', async (_req, res) => {
     );
     res.json(rows.map((r) => r.action));
   } catch (err) {
+    console.error('[audit] Actions error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

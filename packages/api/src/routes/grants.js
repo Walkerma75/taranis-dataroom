@@ -6,15 +6,6 @@ import { pool } from '../db.js';
 import { requireAuth, requireRole, rejectCompanyRole } from '../middleware/auth.js';
 import { logAudit } from '../services/audit.js';
 
-// Helper: load user capabilities from DB
-async function getUserCapabilities(userId) {
-  const { rows: [row] } = await pool.query(
-    `SELECT COALESCE(capabilities, '{}') AS capabilities FROM users WHERE id = $1`,
-    [userId]
-  );
-  return row?.capabilities || {};
-}
-
 const router = Router();
 // Grants management requires admin role or canManageUsers capability
 router.use(requireAuth, rejectCompanyRole, requireRole('admin'));
@@ -54,6 +45,7 @@ router.get('/', async (req, res) => {
       createdAt: g.created_at,
     })));
   } catch (err) {
+    console.error('[grants] List error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -152,6 +144,7 @@ router.delete('/:id', async (req, res) => {
     await logAudit({ action: 'grant.revoked', userId: req.user.sub, resource: 'grant', resourceId: grant.id, ip: req.ip });
     res.json({ message: 'Grant revoked' });
   } catch (err) {
+    console.error('[grants] Revoke error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -59,10 +59,29 @@ test('buildStorageKey: namespaces by fund and keeps the extension', () => {
 });
 
 test('buildStorageKey: is unique across calls', () => {
+  // The clock is injected rather than left to run, because 200 real calls land
+  // inside the same millisecond and their uniqueness then rests entirely on
+  // `Math.round(Math.random() * 1e6)`. Two hundred draws from a million values
+  // collide about 2% of the time (birthday problem), so this test failed
+  // roughly one run in fifty and said nothing useful when it did.
+  let tick = 1700000000000;
   const keys = new Set(
-    Array.from({ length: 200 }, () => buildStorageKey({ fundId: FUND_ID, fileName: 'a.pdf' }))
+    Array.from({ length: 200 }, () => buildStorageKey({
+      fundId: FUND_ID, fileName: 'a.pdf', now: tick++,
+    }))
   );
   assert.equal(keys.size, 200);
+});
+
+test('buildStorageKey: two calls in the same millisecond still differ', () => {
+  // The property that matters in production, asserted without depending on
+  // chance: within one millisecond the random component is what separates two
+  // keys, so it has to actually vary.
+  const draws = [0.1, 0.2];
+  const keys = draws.map(() => buildStorageKey({
+    fundId: FUND_ID, fileName: 'a.pdf', now: 1700000000000, random: () => draws.shift(),
+  }));
+  assert.notEqual(keys[0], keys[1]);
 });
 
 test('the allowed and convertible extension lists are the ones the route relies on', () => {

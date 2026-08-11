@@ -2,6 +2,7 @@
   "name": "taranis-dataroom",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "workspaces": [
     "packages/api",
     "packages/web"
@@ -11,6 +12,7 @@
     "dev:api": "npm -w packages/api run dev",
     "dev:web": "npm -w packages/web run dev",
     "test": "npm -w packages/api run test",
+    "import:fund-docs": "node tools/import-fund-documents.mjs",
     "lint": "npm -w packages/api run lint && npm -w packages/web run lint"
   },
   "engines": {
