@@ -122,11 +122,18 @@ export default function MfaSetupPage() {
             Manual key: {secret}
           </Text>
           <Text>Then enter the 6-digit code below:</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            Codes are generated from your device clock. If they are rejected, check that your
+            phone&apos;s date and time are set automatically, then try the next code.
+          </Text>
           <Input
             value={code}
-            onChange={(e) => setCode(e.target.value)}
+            // Apps show '123 456' and the space rides along on a paste. With
+            // maxLength 6 the space would eat a digit and the Verify button
+            // would stay disabled on a code that was correct all along, so the
+            // digits are taken and everything else dropped.
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
             placeholder="000000"
-            maxLength={6}
             style={{ textAlign: 'center', letterSpacing: '0.5em', fontSize: 20, maxWidth: 200, margin: '0 auto' }}
           />
           <Button type="primary" onClick={verifyCode} loading={loading} disabled={code.length !== 6} block>

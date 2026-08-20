@@ -1,5 +1,6 @@
 /**
- * Operator-only maintenance actions.
+ * Operator-only maintenance actions: the go-live reset, and the email
+ * diagnostics that answer "what happened to the message we sent this person".
  *
  * WHY THIS IS AN ENDPOINT AND NOT A SCRIPT. RDS sits in a private subnet and
  * the deploy credential is ECR and ECS only, so nothing on a workstation can
@@ -21,6 +22,8 @@
 import { Router } from 'express';
 import { requireAuth, requireRole, rejectCompanyRole } from '../middleware/auth.js';
 import { logAudit } from '../services/audit.js';
+import { emailStatusFor, release } from '../services/notifications.js';
+import { getSesSuppression } from '../services/email.js';
 import {
   runReset, resetEnabled, ResetError, CONFIRM_PHRASE, ENABLE_FLAG,
 } from '../services/platform-reset.js';
@@ -85,6 +88,94 @@ router.get('/reset-platform', requireResetEnabled, (_req, res) => {
     note: 'A one-time go-live operation. Remove the enable flag from the task definition '
         + 'afterwards; nothing on this platform is deleted after that point.',
   });
+});
+
+// ---------------------------------------------------------------------------
+// Email diagnostics
+//
+// NOT behind the reset flag. That flag guards a one-time destructive operation
+// and is meant to be absent from the running task; these two are read-only and
+// reversible and have to work on an ordinary day, which is the day someone asks
+// why a counterparty never received their invitation.
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /maintenance/email-status?email=someone@example.com
+ *
+ * What happened to email for one address: every outbox row with its status,
+ * attempts and last error, the app's suppression rows, and SES's own
+ * account-level verdict.
+ *
+ * This is the minimum answer to "the invitation never arrived", and before it
+ * existed the answer required psql against an instance in a private subnet.
+ * A suppressed send is recorded and then shown to nobody, so an administrator
+ * resending an invitation is told it worked either way (HANDOVER-CW015 §3.4).
+ */
+router.get('/email-status', async (req, res) => {
+  const email = String(req.query.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: 'An email address is required.' });
+
+  try {
+    const status = await emailStatusFor(email);
+    const sesSuppression = await getSesSuppression(email);
+
+    await logAudit({
+      action: 'maintenance.email_status',
+      userId: req.user.sub,
+      detail: { email },
+      ip: req.ip,
+    });
+
+    res.json({ ...status, sesSuppression });
+  } catch (err) {
+    console.error('[maintenance] Email status failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * POST /maintenance/email-suppressions/release
+ *   { "email": "...", "reason": "why" }
+ *
+ * Lift the APP-LEVEL suppression. The row is not deleted — `released_at`,
+ * `released_by` and the reason are written and the original event stays on
+ * record, which is what migration 018 asks for and what lets a counterparty
+ * disputing a suppression be answered later.
+ *
+ * SES's account-level list is separate and is NOT touched here. Clearing that
+ * one is `aws sesv2 delete-suppressed-destination`, deliberately left as a
+ * console/CLI action: it is an account-wide change made with a credential this
+ * task does not hold.
+ */
+router.post('/email-suppressions/release', async (req, res) => {
+  const { email, reason } = req.body || {};
+  const address = String(email || '').trim().toLowerCase();
+  if (!address) return res.status(400).json({ error: 'An email address is required.' });
+
+  try {
+    const released = await release({ email: address, releasedBy: req.user.sub, reason: reason || null });
+
+    await logAudit({
+      action: 'maintenance.suppression_released',
+      userId: req.user.sub,
+      detail: { email: address, reason: reason || null, released },
+      ip: req.ip,
+    });
+
+    res.json({
+      email: address,
+      released,
+      message: released
+        ? 'App-level suppression lifted. The row is kept, marked released.'
+        : 'No live app-level suppression for that address; nothing to lift.',
+      note: 'SES keeps its own account-level suppression list. Check it separately: '
+          + 'aws sesv2 get-suppressed-destination --email-address <address> '
+          + '(and delete-suppressed-destination to clear it).',
+    });
+  } catch (err) {
+    console.error('[maintenance] Suppression release failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 export default router;

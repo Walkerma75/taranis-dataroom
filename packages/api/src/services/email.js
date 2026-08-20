@@ -215,6 +215,62 @@ export class MemoryMailer {
   }
 }
 
+/**
+ * Ask SES whether it is holding an address on the ACCOUNT-LEVEL suppression
+ * list, which is a different list from `email_suppressions`.
+ *
+ * WHY BOTH LISTS HAVE TO BE ASKED. SES suppresses on a hard bounce or a
+ * complaint whether or not this platform ever hears about it, and today it does
+ * not hear about it: the SNS topic and SQS queue that feed
+ * `services/ses-events.js` are console work still outstanding
+ * (HANDOVER-C011 §3.3). So for now a message can be recorded here as sent, be
+ * hard-bounced at the far end, and every subsequent send to that address be
+ * dropped by SES silently — with the app's own tables showing nothing at all.
+ * That is the AdrenoMed shape (HANDOVER-CW015 §2A), and it is invisible without
+ * this call.
+ *
+ * DEGRADES RATHER THAN FAILS. The task role may not carry
+ * `ses:GetSuppressedDestination`, and outside production there is no SES at all.
+ * Either way the diagnostic must still return the half it does know, so the
+ * reason is reported in place of the answer and nothing throws.
+ *
+ * @returns {{available: boolean, suppressed?: boolean, reason?: string,
+ *            lastUpdate?: string, error?: string}}
+ */
+export async function getSesSuppression(address, { client, commands, region, env = process.env } = {}) {
+  const backend = (env.EMAIL_BACKEND || (env.NODE_ENV === 'production' ? 'ses' : 'log')).toLowerCase();
+  if (!client && backend !== 'ses') {
+    return { available: false, error: `Email backend is '${backend}', not SES; there is no account-level list to read.` };
+  }
+
+  try {
+    let resolvedClient = client;
+    let resolvedCommands = commands;
+    if (!resolvedClient || !resolvedCommands) {
+      const sdk = await import('@aws-sdk/client-sesv2');
+      resolvedCommands = resolvedCommands || sdk;
+      const resolvedRegion = region || env.AWS_REGION;
+      resolvedClient = resolvedClient || new sdk.SESv2Client({ ...(resolvedRegion ? { region: resolvedRegion } : {}) });
+    }
+
+    const { GetSuppressedDestinationCommand } = resolvedCommands;
+    const out = await resolvedClient.send(
+      new GetSuppressedDestinationCommand({ EmailAddress: address })
+    );
+    const dest = out?.SuppressedDestination || {};
+    return {
+      available: true,
+      suppressed: true,
+      reason: dest.Reason ?? null,
+      lastUpdate: dest.LastUpdateTime ? new Date(dest.LastUpdateTime).toISOString() : null,
+    };
+  } catch (err) {
+    // NotFoundException is the answer "no", not a failure.
+    if (err?.name === 'NotFoundException') return { available: true, suppressed: false };
+    return { available: false, error: `${err?.name || 'Error'}: ${err?.message || String(err)}` };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Selection and injection
 // ---------------------------------------------------------------------------
