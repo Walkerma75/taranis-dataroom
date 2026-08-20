@@ -111,11 +111,15 @@ export default function LoginPage() {
               <Form.Item
                 name="totpCode"
                 rules={[{ required: true, message: 'Please enter your TOTP code' }]}
+                // Apps show '123 456' and the space rides along on a paste.
+                // With maxLength 6 the space would eat a digit, so the digits
+                // are taken and everything else dropped. The API strips it too;
+                // this is so the field shows what will actually be submitted.
+                normalize={(value) => String(value ?? '').replace(/\D/g, '').slice(0, 6)}
               >
                 <Input
                   placeholder="000000"
                   size="large"
-                  maxLength={6}
                   autoFocus
                   style={{ textAlign: 'center', letterSpacing: '0.5em', fontSize: 20 }}
                 />

@@ -245,6 +245,57 @@ export async function suppress({ email, reason, detail = null }, client) {
   return rows[0]?.id ?? null;
 }
 
+/**
+ * Everything the platform knows about email to one address.
+ *
+ * WHY THIS EXISTS. A send withheld because the address is suppressed is
+ * recorded as an outbox row with status 'suppressed' and nothing else — no
+ * banner, no notice, nothing in any screen. An administrator who resends an
+ * invitation therefore sees a success message for a message that was never
+ * going to leave, which is exactly what happened to AdrenoMed: two invitations
+ * queued, neither delivered, and no way to find that out short of reaching a
+ * database that sits in a private subnet (HANDOVER-CW015 §2A).
+ *
+ * So this answers the one operational question — "what happened to email for
+ * this address" — from the two tables that hold the answer. The full admin UI
+ * is Phase 2; being able to ask at all is not.
+ *
+ * NOTE THE LIMIT OF IT. It reports what the PLATFORM did. A message this says
+ * was sent may still have hard-bounced at the far end: SES keeps its own
+ * account-level suppression list, and until the bounce queue is wired
+ * (`SES_EVENTS_QUEUE_URL`, HANDOVER-C011 §3.3) that list is the only record of
+ * such a bounce. `sesSuppression` on the endpoint covers that half.
+ */
+export async function emailStatusFor(email, { pool = defaultPool, limit = 50 } = {}) {
+  const address = normaliseEmail(email);
+
+  const { rows: outbox } = await pool.query(
+    `SELECT id, template, recipient, status, attempts, last_error, message_id,
+            created_at, send_after, sent_at
+       FROM notification_outbox
+      WHERE lower(recipient) = $1
+      ORDER BY created_at DESC
+      LIMIT $2`,
+    [address, limit]
+  );
+
+  const { rows: suppressions } = await pool.query(
+    `SELECT id, email, reason, detail, suppressed_at,
+            released_at, released_by, released_reason
+       FROM email_suppressions
+      WHERE email = $1
+      ORDER BY suppressed_at DESC`,
+    [address]
+  );
+
+  return {
+    email: address,
+    suppressed: suppressions.some((row) => row.released_at === null),
+    outbox,
+    suppressions,
+  };
+}
+
 /** Lift a suppression. The row stays, with who released it and why. */
 export async function release({ email, releasedBy, reason = null }, client) {
   const db = client || defaultPool;

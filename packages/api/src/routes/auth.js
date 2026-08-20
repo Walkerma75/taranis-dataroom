@@ -28,6 +28,40 @@ import { loadCompanyMembership } from '../services/companies.js';
 const router = Router();
 
 /**
+ * ONE STEP OF TOLERANCE EITHER SIDE OF NOW.
+ *
+ * otplib v12 defaults `window` to 0, which accepts only the code for the
+ * current 30-second step. Every authenticator app derives its codes from the
+ * DEVICE clock, so a phone thirty seconds out produces codes that are all
+ * rejected, in every app on that phone, with no clue as to why — which is
+ * exactly what AdrenoMed hit (HANDOVER-CW015 §2B) while a company on a
+ * correctly-set device enrolled without trouble.
+ *
+ * A window of 1 accepts the previous and next step: RFC 6238 §5.2 anticipates
+ * exactly this drift, and one step is what Google's own guidance recommends.
+ * The cost is that a captured code stays usable for at most ninety seconds
+ * rather than thirty, against a password the attacker must also hold; the
+ * benefit is that ordinary clock drift stops presenting as a broken account.
+ *
+ * Set once, at module level, so the login check and the enrolment check cannot
+ * drift apart — a tolerance applied at enrolment but not at login would let
+ * someone enrol and then be unable to sign in.
+ */
+authenticator.options = { window: 1 };
+
+/**
+ * Codes as people actually submit them.
+ *
+ * Authenticator apps display '123 456' and both copy-paste and hand-typing
+ * carry the space through. Rejecting that is rejecting a correct code for its
+ * punctuation. Non-digits are stripped rather than the string merely trimmed,
+ * because the space is in the middle.
+ */
+export function normaliseTotpCode(code) {
+  return String(code ?? '').replace(/\D/g, '');
+}
+
+/**
  * MFA is MANDATORY for role `company` and unchanged (opt-in) for every other
  * role. This is HANDOVER-C003 §5.5 and it is deliberate: forcing enrolment on
  * live investor, advisor and viewer users mid-release would lock people out of
@@ -100,7 +134,7 @@ router.post('/login', async (req, res) => {
       if (!totpCode) {
         return res.status(200).json({ mfaRequired: true, message: 'TOTP code required' });
       }
-      const validTotp = authenticator.check(totpCode, user.totp_secret);
+      const validTotp = authenticator.check(normaliseTotpCode(totpCode), user.totp_secret);
       if (!validTotp) {
         await recordFailedLogin(user.id);
         await logAudit({ action: 'login.failed', userId: user.id, detail: { reason: 'bad_totp' }, ip, userAgent: ua });
@@ -265,19 +299,41 @@ router.get('/me', requireAuth, async (req, res) => {
 // ---------------------------------------------------------------------------
 // Uses requireAuthForMfaEnrolment so a company user holding an `mfaPending`
 // token can complete enrolment. Every other route rejects that token.
+//
+// IDEMPOTENT WHILE ENROLMENT IS IN PROGRESS. This used to mint a new secret on
+// every call and overwrite the stored one, so a page refresh, a second tab or
+// a second press of "Begin Setup" silently invalidated whatever the user had
+// already scanned. They then read codes off a dead entry and were told the code
+// was invalid, which is a trap that gets worse the harder someone tries — the
+// second half of HANDOVER-CW015 §2B.
+//
+// So an UNVERIFIED row is returned as it stands, QR and all. A fresh secret is
+// generated only when there is no row, or when the existing row is verified and
+// this is therefore a deliberate re-enrolment. Re-enrolment still overwrites,
+// which is the point of it; it is `/mfa/verify` that flips the row back to
+// verified, so a re-enrolment abandoned half way leaves the account with MFA
+// off rather than with a secret nobody holds.
 router.post('/mfa/setup', requireAuthForMfaEnrolment, async (req, res) => {
   try {
-    const secret = authenticator.generateSecret();
+    const { rows: [existing] } = await pool.query(
+      `SELECT totp_secret, totp_verified FROM user_mfa WHERE user_id = $1`,
+      [req.user.sub]
+    );
+
+    const reuse = Boolean(existing && existing.totp_secret && !existing.totp_verified);
+    const secret = reuse ? existing.totp_secret : authenticator.generateSecret();
     const otpauth = authenticator.keyuri(req.user.email, 'Taranis Data Room', secret);
     const qrDataUrl = await QRCode.toDataURL(otpauth);
 
-    // Upsert MFA record (not yet verified)
-    await pool.query(
-      `INSERT INTO user_mfa (user_id, totp_secret, totp_verified)
-       VALUES ($1, $2, false)
-       ON CONFLICT (user_id) DO UPDATE SET totp_secret = $2, totp_verified = false`,
-      [req.user.sub, secret]
-    );
+    if (!reuse) {
+      // Upsert MFA record (not yet verified)
+      await pool.query(
+        `INSERT INTO user_mfa (user_id, totp_secret, totp_verified)
+         VALUES ($1, $2, false)
+         ON CONFLICT (user_id) DO UPDATE SET totp_secret = $2, totp_verified = false`,
+        [req.user.sub, secret]
+      );
+    }
 
     res.json({ secret, qrCode: qrDataUrl });
   } catch (err) {
@@ -290,7 +346,7 @@ router.post('/mfa/setup', requireAuthForMfaEnrolment, async (req, res) => {
 // POST /auth/mfa/verify — confirm TOTP code to enable MFA
 // ---------------------------------------------------------------------------
 router.post('/mfa/verify', requireAuthForMfaEnrolment, async (req, res) => {
-  const { code } = req.body;
+  const code = normaliseTotpCode((req.body || {}).code);
   if (!code) return res.status(400).json({ error: 'TOTP code required' });
 
   try {
