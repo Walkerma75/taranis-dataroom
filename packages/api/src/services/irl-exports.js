@@ -12,15 +12,34 @@
  *   GAPS        Section | Ref | Information still required | We already hold |
  *               Priority | Notes for company
  *
- * PRE-FILLED is the whole list, Taranis-side. GAPS is what the company still
- * owes, and it is the one that can be sent out, so it must never carry an
- * internal note. That is enforced by never selecting the column into the row
- * shape these builders accept, and asserted in the tests.
+ * PRE-FILLED is the whole list, Taranis-side, and it may name internal sources
+ * because it is never sent anywhere. GAPS is what the company still owes and is
+ * the one that goes out, so two separate things have to hold of it: the
+ * `internal_note` column is excluded structurally, by never being selected into
+ * the row shape these builders accept, AND the free text in the columns that
+ * ARE company-visible is checked for CASS scores and internal sources before a
+ * row is written (services/company-visible-text.js, HANDOVER-CW019). Both are
+ * asserted in the tests.
  *
  * `ref` is a permanent identifier the company quotes back in correspondence.
  * Both sheets carry it verbatim and neither ever renumbers.
  */
 import ExcelJS from 'exceljs';
+import { findUnsafeRowText, describeUnsafe } from './company-visible-text.js';
+
+/**
+ * A GAPS export refused because a row carries a CASS score or an internal
+ * source. Mapped to 409 by the export route: the request is well formed, the
+ * stored data is not fit to send.
+ */
+export class GapsContentError extends Error {
+  constructor(companyName, problems) {
+    super(`The GAPS export for ${companyName} carries text the company must not see`);
+    this.name = 'GapsContentError';
+    this.code = 'GAPS_UNSAFE_CONTENT';
+    this.problems = problems;
+  }
+}
 
 const TARANIS_GREEN = 'FF2C3E35';
 
@@ -107,9 +126,38 @@ export async function buildPrefilledWorkbook({ companyName, items = [] }) {
 }
 
 /**
- * The GAPS export. Company-facing, so no internal note reaches it.
+ * The GAPS export. This is the sheet that is sent to the company.
+ *
+ * THREE OF ITS SIX COLUMNS ARE COMPANY-VISIBLE FREE TEXT: `description`,
+ * `already_held` ("We already hold") and `note_for_company` ("Notes for
+ * company"), alongside the fixed section, ref and priority. `internal_note` is
+ * excluded structurally, by never being part of the shape `exportableItem`
+ * produces, and that remains true.
+ *
+ * An earlier version of this comment said only that no internal note reaches
+ * the sheet. That was true and beside the point: the KardiaNova wording of 14
+ * August 2026 reached a founder through `already_held`, which is not an
+ * internal note and was never filtered. Excluding one column is not the same as
+ * the text being safe, so the text itself is now checked (HANDOVER-CW019 §3.4).
+ *
+ * On a hit this throws rather than writing a redacted sheet. A half-redacted
+ * GAPS file looks finished and would be sent; a failed export makes somebody
+ * fix the data, which is the only thing that actually removes the problem.
+ *
+ * @throws {GapsContentError}
  */
 export async function buildGapsWorkbook({ companyName, items = [] }) {
+  const rows = gapsRows(items);
+
+  const unsafe = rows.flatMap(findUnsafeRowText);
+  if (unsafe.length) {
+    console.error(
+      `[irl-exports] GAPS export blocked for ${companyName}: `
+      + unsafe.map(describeUnsafe).join('; ')
+    );
+    throw new GapsContentError(companyName, unsafe);
+  }
+
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Taranis Capital Data Room';
   const sheet = workbook.addWorksheet('GAPS');
@@ -124,7 +172,7 @@ export async function buildGapsWorkbook({ companyName, items = [] }) {
   ];
   styleHeader(sheet);
 
-  for (const item of gapsRows(items)) {
+  for (const item of rows) {
     sheet.addRow({
       section: item.section,
       ref: item.ref,

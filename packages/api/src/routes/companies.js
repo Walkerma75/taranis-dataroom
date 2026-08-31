@@ -58,7 +58,12 @@ import {
   buildPrefilledWorkbook,
   buildGapsWorkbook,
   exportableItem,
+  GapsContentError,
 } from '../services/irl-exports.js';
+import {
+  assertCompanySafeText,
+  CompanyVisibleTextError,
+} from '../services/company-visible-text.js';
 import { getStorage, StorageNotFoundError, STAGING_ROOT } from '../services/storage.js';
 import { getScanner, downloadDecision } from '../services/scanner.js';
 import { contentDispositionFilename } from '../services/document-files.js';
@@ -1010,12 +1015,45 @@ async function queueNewItemsNotification(companyId, { items, noteForCompany }) {
   }
 }
 
+/**
+ * Refuse text that would reach the company carrying a CASS score or an internal
+ * source, before it is stored (HANDOVER-CW019 §3.2).
+ *
+ * Only the company-visible fields are checked. `internalNote` is exempt and is
+ * where this material belongs; `sourceDocument` is exempt because it feeds the
+ * internal PRE-FILLED sheet only, where naming an internal source is the point.
+ * Both exemptions are argued in services/company-visible-text.js.
+ *
+ * @returns {boolean} true when the request has been answered and the caller
+ *                    must stop.
+ */
+function rejectUnsafeCompanyText(req, res) {
+  const { alreadyHeld, noteForCompany } = req.body || {};
+  try {
+    if (alreadyHeld !== undefined) assertCompanySafeText('alreadyHeld', alreadyHeld);
+    if (noteForCompany !== undefined) assertCompanySafeText('noteForCompany', noteForCompany);
+    return false;
+  } catch (err) {
+    if (!(err instanceof CompanyVisibleTextError)) throw err;
+    res.status(400).json({
+      error: err.message,
+      field: err.field,
+      term: err.term,
+      match: err.match,
+    });
+    return true;
+  }
+}
+
 // Ad hoc item, or a template addition pushed to one company.
 router.post('/:id/irl-items', requireCompanyAccess({ write: true }), async (req, res) => {
   const { section, ref, description, priority, noteForCompany } = req.body;
   if (!section || !ref || !description) {
     return res.status(400).json({ error: 'A section, a ref and a description are required' });
   }
+  // This route writes `note_for_company`, which reaches the GAPS sheet, the
+  // portal and the new-items email queued below.
+  if (rejectUnsafeCompanyText(req, res)) return;
 
   try {
     const { rows: [maxOrder] } = await pool.query(
@@ -1079,6 +1117,11 @@ router.post('/:id/irl-items', requireCompanyAccess({ write: true }), async (req,
 
 router.patch('/:id/irl-items/:itemId', requireCompanyAccess({ write: true }), async (req, res) => {
   const { description, priority, state, noteForCompany, internalNote, alreadyHeld, sourceDocument } = req.body;
+  // `alreadyHeld` is the GAPS sheet's "We already hold" column and is the field
+  // the KardiaNova wording sat in; `noteForCompany` reaches the portal and email
+  // as well. Both are refused before any column is set.
+  if (rejectUnsafeCompanyText(req, res)) return;
+
   const sets = [];
   const params = [req.params.itemId, req.params.id];
   const add = (column, value) => {
@@ -1525,6 +1568,17 @@ router.get('/:id/export', requireCompanyAccess(), async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buffer);
   } catch (err) {
+    // The stored text is not fit to send. 409 rather than 500: the request is
+    // well formed and nothing is broken, but the data behind it has to be
+    // rewritten before this sheet can exist. The refs are named so the operator
+    // knows which rows to fix (HANDOVER-CW019 §3.4).
+    if (err instanceof GapsContentError) {
+      return res.status(409).json({
+        error: 'The GAPS export was blocked because rows carry text the company must not see. '
+             + 'Move it to the internal note and state the substance neutrally, then export again.',
+        problems: err.problems,
+      });
+    }
     console.error('[companies] Export error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }

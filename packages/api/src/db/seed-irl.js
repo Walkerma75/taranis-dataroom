@@ -26,6 +26,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { pool } from '../db.js';
+import { findUnsafeRowText, describeUnsafe } from '../services/company-visible-text.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const SEEDS_DIR = path.join(__dirname, 'seeds');
@@ -107,6 +108,17 @@ export function validateIrlSeed(seed) {
     }
     if (!Number.isInteger(item.sort_order)) {
       problems.push(`ref ${item.ref}: sort_order is not an integer`);
+    }
+
+    // A master sheet carrying a CASS score or an internal source must not reach
+    // the database, because everything downstream of the template treats its
+    // text as sendable: activation copies these two columns into every
+    // company's checklist, and from there they are the GAPS sheet's "We already
+    // hold" and "Notes for company". Refusing here is the cheapest place to
+    // catch it, and it refuses the whole import rather than the row
+    // (HANDOVER-CW019 §3.3).
+    for (const hit of findUnsafeRowText(item)) {
+      problems.push(describeUnsafe(hit));
     }
   }
 
