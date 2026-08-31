@@ -80,6 +80,28 @@ const CATEGORIES =
   'Investment Fundamentals|Saudi Localisation|Market & Execution|Strategic Alignment';
 
 /**
+ * A number that could be a score, as opposed to one that is plainly a date.
+ *
+ * CW019 §3.1 says "within 40 characters of a digit", and any digit was too
+ * blunt: it blocked "Strategic Alignment with your Q3 roadmap" and "Market &
+ * Execution plans for the 2027 launch", which are ordinary things to write to a
+ * company about. Narrowed on Mark's instruction, 31 August 2026, so that
+ * quarters and years do not fire.
+ *
+ * Three exclusions, and each one is a real sentence somebody would write:
+ *
+ *   (?<![A-Za-z\d/])      a digit behind a letter is a label, not a score:
+ *                         Q3, Q4, FY26, H1. Behind a slash it is the tail of
+ *                         something already counted, as in FY2024/25.
+ *   \d{1,3}(?!\d)         scores run 0 to 100, so a four-digit run is a year.
+ *                         2026 cannot match at any offset.
+ *   (?!.../.../...)       the leading part of a d/m/y date: 14/8/2026. A date
+ *                         has two slashes, so "20/30" is untouched and still
+ *                         reads as a sub-score.
+ */
+const SCORE_NUMBER = String.raw`(?<![A-Za-z\d/])\d{1,3}(?!\d)(?!\s*/\s*\d{1,2}\s*/\s*\d)`;
+
+/**
  * Every pattern, in one list, tiered.
  *
  * `term` is what the author is shown. It has to name the thing they typed
@@ -150,10 +172,11 @@ export const COMPANY_UNSAFE_PATTERNS = [
     tier: 'score',
     // A category name is only a leak when it carries a number, which is what
     // makes it a sub-score rather than a heading. CW019 §3.1 sets the window at
-    // 40 characters, either side.
-    term: 'a CASS category with a number',
+    // 40 characters, either side; SCORE_NUMBER is what counts as a number.
+    term: 'a CASS category with a score',
     pattern: new RegExp(
-      String.raw`\d[\s\S]{0,40}?(?:${CATEGORIES})|(?:${CATEGORIES})[\s\S]{0,40}?\d`,
+      String.raw`${SCORE_NUMBER}[\s\S]{0,40}?(?:${CATEGORIES})`
+      + String.raw`|(?:${CATEGORIES})[\s\S]{0,40}?${SCORE_NUMBER}`,
       'i'
     ),
   },

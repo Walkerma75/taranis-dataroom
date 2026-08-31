@@ -121,6 +121,35 @@ test('a UK date is not a score', () => {
   }
 });
 
+test('a category name is only a leak when it carries a score', () => {
+  // Narrowed on Mark's instruction, 31 August 2026. The rule as briefed was
+  // "within 40 characters of a digit", which blocked ordinary things to write
+  // to a company about: a quarter, a financial year, a launch date.
+  for (const text of [
+    'Strategic Alignment with your Q3 roadmap is still to be documented',
+    'Please confirm Market & Execution plans for the 2027 launch',
+    'Market & Execution plans for Q3-Q4 2026',
+    'Saudi Localisation evidence for FY2024/25',
+    'Investment Fundamentals section of your FY26 plan',
+    'Strategic Alignment narrative, updated 14/8/2026',
+    'Saudi Localisation evidence dated 12/10/2025',
+  ]) {
+    assert.deepEqual(findCompanyUnsafeText(text), [], `should be permitted: ${text}`);
+  }
+
+  // A real sub-score still fires, including one whose denominator is not on the
+  // CASS list and so is not caught by the fraction rule.
+  for (const text of [
+    'Investment Fundamentals 20/30',
+    'Investment Fundamentals 20/25',
+    'Saudi Localisation 18/20',
+    'sub-score of 4 on Market & Execution',
+    'Strategic Alignment: 15',
+  ]) {
+    assert.ok(tiersFor(text).includes('score'), `expected a score hit: ${text}`);
+  }
+});
+
 test('empty, null and undefined are safe', () => {
   for (const value of [null, undefined, '', '   ']) {
     assert.equal(isCompanySafeText(value), true);
