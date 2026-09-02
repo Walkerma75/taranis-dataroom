@@ -2,16 +2,15 @@
  * The daily outstanding-actions digest.
  *
  * ---------------------------------------------------------------------------
- * OFF BY DEFAULT, AND THAT IS NOT A STOPGAP
+ * OFF BY DEFAULT, AND STILL NOT A STOPGAP
  * ---------------------------------------------------------------------------
- * `DD_DIGEST_ENABLED` gates the send and is unset everywhere until Mark has
- * approved the wording. The ten Phase 1b templates are approved copy, asserted
- * character for character, and a wording change comes back through Cowork
- * rather than being written on the code side (HANDOVER-CW011 §1). An eleventh
- * template is the same rule seen from the other end: the draft below is a
- * proposal, so the machinery ships built, tested and dark, and the flag is what
- * turns a proposal into something a counterparty's inbox never sees but Mark's
- * does. See HANDOVER-C020 D6.
+ * `DD_DIGEST_ENABLED` gates the send and is unset unless a deployment sets it.
+ * It began life as a review gate, holding a code-side draft away from an inbox
+ * until Mark approved the wording, which he did on 2 September 2026. What it is
+ * now is an operational switch: the template is approved and frozen like the
+ * other ten, and this decides WHERE the digest sends from. Production has it;
+ * a developer's machine and any future staging task do not, so nobody's local
+ * `docker compose up` starts mailing the admin address every weekday morning.
  *
  * ---------------------------------------------------------------------------
  * WHY A TIMER AT ALL, AND WHY IT NEEDS A DEDUPE KEY

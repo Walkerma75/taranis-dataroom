@@ -108,12 +108,47 @@ test('all ten approved templates are present, in the order of the approved file'
   ]);
 });
 
-test('the draft digest template is present, marked unwired, and last', () => {
+test('the digest template is present, last, and wired', () => {
   assert.equal(TEMPLATE_IDS.length, 11);
   assert.equal(TEMPLATE_IDS[10], 'dd-digest');
-  // `wired: false` is the marker the other two unapproved-or-uncalled templates
-  // carry. Losing it is how a draft quietly becomes something nobody rechecks.
-  assert.equal(TEMPLATES['dd-digest'].wired, false);
+  // Unlike `new-comment` and `reminder-outstanding` this one has a caller, so
+  // it carries no `wired: false` marker.
+  assert.equal(TEMPLATES['dd-digest'].wired, undefined);
+});
+
+test('the digest wording is frozen, as approved on 2 September 2026', () => {
+  // The same protection `company-invite` gets below, and for the same reason:
+  // this is approved copy now, so an edit has to fail the suite rather than
+  // reach an inbox. It was drafted on the code side and approved in
+  // HANDOVER-C020 §6, which is the exception to how the other ten arrived, not
+  // a licence to reword this one in passing.
+  const { subject, text } = renderTemplate('dd-digest', fullPayload());
+
+  assert.equal(subject, 'Due diligence: 6 awaiting Taranis, 3 awaiting companies');
+
+  assert.ok(text.includes(
+    'Outstanding due diligence actions as at the morning of 2 September 2026.'
+  ));
+  assert.ok(text.includes('Awaiting Taranis: 6\nAwaiting companies: 3'));
+  assert.ok(text.includes(
+    'Example Bio Ltd, Biotech KSA: 6 awaiting Taranis (4 to open, 2 in review).'
+  ));
+  assert.ok(text.includes(
+    'An item is flagged amber after 1 working day(s) with Taranis and red after 3. '
+    + 'On the company side the flags are 3 and 7 calendar days, counted from the date '
+    + 'the company was asked for something specific. Checklist items nobody has started '
+    + 'are counted but not aged.'
+  ));
+  assert.ok(text.includes(
+    'Open the dashboard: https://dataroom.taraniscapital.com/dashboard'
+  ));
+
+  // Internal, to the admin address, so it opens with no greeting and closes
+  // with no sign-off, matching the other two that go there.
+  assert.equal(text.startsWith('Outstanding due diligence actions'), true);
+  assert.equal(text.includes('Kind regards'), false);
+  // UK English, no em dashes in anything a person reads.
+  assert.equal(text.includes('—'), false);
 });
 
 test('every template renders a subject, an HTML part and a plain-text part', () => {

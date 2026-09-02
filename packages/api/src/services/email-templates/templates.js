@@ -1,5 +1,5 @@
 /**
- * The ten approved templates, and one draft awaiting approval.
+ * The eleven approved templates.
  *
  * ---------------------------------------------------------------------------
  * DO NOT EDIT THE WORDING IN THIS FILE
@@ -26,11 +26,12 @@
  * a template with no caller is a smaller thing to carry than a template written
  * from memory in six months (HANDOVER-CW011 §3.5).
  *
- * THE ELEVENTH IS A DRAFT AND IS THE ONLY EXCEPTION TO THE RULE ABOVE.
- * `dd-digest` has a caller, but that caller is gated by `DD_DIGEST_ENABLED` and
- * the flag stays unset until Mark has approved the wording, so nothing it says
- * can reach anyone meanwhile. It is marked at its own entry, and it is the one
- * place in this file where an edit is expected rather than forbidden.
+ * THE ELEVENTH CAME THE OTHER WAY ROUND. `dd-digest` was drafted on the code
+ * side, set out in full in HANDOVER-C020 §6, and approved by Mark on 2 September
+ * 2026 as drafted. It is frozen now on exactly the same terms as the other ten;
+ * the note at its own entry records the difference so nobody reads it as a
+ * precedent. Its caller is additionally gated by `DD_DIGEST_ENABLED`, which is
+ * an operational switch for where the digest sends, not a review gate.
  */
 import { renderHtml, renderText } from './layout.js';
 
@@ -211,21 +212,21 @@ export const TEMPLATES = {
   },
 
   // 11 ------------------------------------------------------------------
-  // DRAFT WORDING, AWAITING APPROVAL. Everything above this line is approved
-  // copy and frozen; this is not, and it is the one template in this file whose
-  // wording the code side wrote. It is here so the digest can be built, tested
-  // and reviewed as working software, and it cannot reach anyone until
-  // DD_DIGEST_ENABLED is set (see services/dd-digest.js). When Mark approves
-  // the wording it comes back through Cowork like the other ten and this
-  // comment goes; if he amends it, the amended text replaces what is here.
+  // APPROVED BY MARK, 2 SEPTEMBER 2026, as drafted. Now frozen on the same
+  // terms as the ten above it: a change comes back through Cowork as an amended
+  // approved wording and is not the code side's to make.
+  //
+  // Its provenance differs from theirs and the difference is worth keeping.
+  // The other ten were approved wording that the code implemented; this one was
+  // drafted on the code side, set out in full in HANDOVER-C020 §6 for review,
+  // and approved there. That is the exception, not a new way of working.
   //
   // Internal, to admin@taraniscapital.com, so no 'Dear' and no signoff, the
   // same shape as 'nomination-pending' and 'submission-notification'.
   'dd-digest': {
     description:
       'To ADMIN_NOTIFICATION_EMAIL, once each weekday morning when either bucket is '
-      + 'non-empty. DRAFT WORDING, awaiting approval; gated by DD_DIGEST_ENABLED.',
-    wired: false,
+      + 'non-empty. Approved 2 September 2026; sends only where DD_DIGEST_ENABLED is set.',
     subject: (p) =>
       `Due diligence: ${p.awaiting_taranis_count} awaiting Taranis, `
       + `${p.awaiting_company_count} awaiting companies`,
