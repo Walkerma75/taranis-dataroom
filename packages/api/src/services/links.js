@@ -90,6 +90,15 @@ export const companyReceiptsUrl = (env) => path('/company/receipts', env);
 export const adminReviewUrl = (env) => path('/admin/review-queue', env);
 
 /**
+ * The admin dashboard, which is where the due diligence section lives.
+ *
+ * The daily digest links here rather than to the review queue: the digest
+ * reports both sides of the exchange, and the review queue only shows one of
+ * them.
+ */
+export const dashboardUrl = (env) => path('/dashboard', env);
+
+/**
  * A nomination is approved from inside the company it belongs to, never from a
  * shared list with a company picker (HANDOVER-C006 §3.2), so the notification
  * links to the company rather than to a nominations screen.

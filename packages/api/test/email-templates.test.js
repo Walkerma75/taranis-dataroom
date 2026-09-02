@@ -70,6 +70,17 @@ function fullPayload(overrides = {}) {
     outstanding_high_count: 4,
     outstanding_total_count: 12,
 
+    // The draft digest (CW020 §3.5).
+    digest_date: '2 September 2026',
+    awaiting_taranis_count: 6,
+    awaiting_company_count: 3,
+    company_lines: ['Example Bio Ltd, Biotech KSA: 6 awaiting Taranis (4 to open, 2 in review).'],
+    taranis_amber_days: 1,
+    taranis_red_days: 3,
+    company_amber_days: 3,
+    company_red_days: 7,
+    dashboard_url: 'https://dataroom.taraniscapital.com/dashboard',
+
     ...overrides,
   };
 }
@@ -79,7 +90,11 @@ function fullPayload(overrides = {}) {
 // ---------------------------------------------------------------------------
 
 test('all ten approved templates are present, in the order of the approved file', () => {
-  assert.deepEqual(TEMPLATE_IDS, [
+  // The eleventh, `dd-digest`, is a DRAFT and is deliberately not part of this
+  // list: this assertion is about the approved file, and the draft is not in it.
+  // It is asserted separately below, and it stays out of the approved order
+  // until Mark's wording comes back through Cowork.
+  assert.deepEqual(TEMPLATE_IDS.slice(0, 10), [
     'company-invite',
     'nomination-pending',
     'upload-notification',
@@ -91,6 +106,14 @@ test('all ten approved templates are present, in the order of the approved file'
     'new-items',
     'reminder-outstanding',
   ]);
+});
+
+test('the draft digest template is present, marked unwired, and last', () => {
+  assert.equal(TEMPLATE_IDS.length, 11);
+  assert.equal(TEMPLATE_IDS[10], 'dd-digest');
+  // `wired: false` is the marker the other two unapproved-or-uncalled templates
+  // carry. Losing it is how a draft quietly becomes something nobody rechecks.
+  assert.equal(TEMPLATES['dd-digest'].wired, false);
 });
 
 test('every template renders a subject, an HTML part and a plain-text part', () => {

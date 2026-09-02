@@ -146,11 +146,23 @@ export function shortDescription(text, limit = 80) {
 /**
  * Queue one message.
  *
+ * `dedupeKey` is optional and is for messages queued by a CLOCK rather than by
+ * a request. A request happens once; a timer fires again every time the process
+ * that watches it restarts, so the daily digest would be sent afresh after
+ * every deploy without one. With a key set, a second queue() naming the same
+ * key inserts nothing and returns null, decided by the unique index in
+ * migration 020 rather than by a check the caller races on.
+ *
+ * Note what a null return therefore means now: either the call site had no
+ * recipient, which is a bug and is logged, or the message was already queued
+ * under this key, which is the mechanism working. Neither is an error to the
+ * caller, and no caller has ever branched on the id.
+ *
  * @param {object} client   the caller's transaction client; `pool` only when
  *                          the caller genuinely has no transaction
- * @param {object} message  { template, recipient, payload }
+ * @param {object} message  { template, recipient, payload, dedupeKey }
  */
-export async function queue(client, { template, recipient, payload = {} }) {
+export async function queue(client, { template, recipient, payload = {}, dedupeKey = null }) {
   const db = client || defaultPool;
   const to = String(recipient || '').trim();
 
@@ -163,11 +175,17 @@ export async function queue(client, { template, recipient, payload = {} }) {
     return null;
   }
 
+  const key = dedupeKey ? String(dedupeKey).trim() : null;
+
+  // ON CONFLICT names the partial index's predicate as well as its column, so
+  // the arbiter can only be that index. Without the predicate PostgreSQL cannot
+  // match a partial index and the statement fails.
   const { rows } = await db.query(
-    `INSERT INTO notification_outbox (template, recipient, payload)
-     VALUES ($1, $2, $3::jsonb)
+    `INSERT INTO notification_outbox (template, recipient, payload, dedupe_key)
+     VALUES ($1, $2, $3::jsonb, $4)
+     ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
      RETURNING id`,
-    [template, to, JSON.stringify(payload)]
+    [template, to, JSON.stringify(payload), key]
   );
 
   return rows[0]?.id ?? null;

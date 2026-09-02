@@ -1,5 +1,5 @@
 /**
- * The ten approved templates.
+ * The ten approved templates, and one draft awaiting approval.
  *
  * ---------------------------------------------------------------------------
  * DO NOT EDIT THE WORDING IN THIS FILE
@@ -25,6 +25,12 @@
  * ship here rendered and tested because the wording is approved now and because
  * a template with no caller is a smaller thing to carry than a template written
  * from memory in six months (HANDOVER-CW011 §3.5).
+ *
+ * THE ELEVENTH IS A DRAFT AND IS THE ONLY EXCEPTION TO THE RULE ABOVE.
+ * `dd-digest` has a caller, but that caller is gated by `DD_DIGEST_ENABLED` and
+ * the flag stays unset until Mark has approved the wording, so nothing it says
+ * can reach anyone meanwhile. It is marked at its own entry, and it is the one
+ * place in this file where an edit is expected rather than forbidden.
  */
 import { renderHtml, renderText } from './layout.js';
 
@@ -201,6 +207,45 @@ export const TEMPLATES = {
       { p: `If any item does not apply to ${p.company_name}, or will take time to prepare, let us know through the comments on that item; a credible date is always better than silence.` },
       { button: { label: 'View outstanding items', url: p.workspace_url } },
       { signoff: true },
+    ],
+  },
+
+  // 11 ------------------------------------------------------------------
+  // DRAFT WORDING, AWAITING APPROVAL. Everything above this line is approved
+  // copy and frozen; this is not, and it is the one template in this file whose
+  // wording the code side wrote. It is here so the digest can be built, tested
+  // and reviewed as working software, and it cannot reach anyone until
+  // DD_DIGEST_ENABLED is set (see services/dd-digest.js). When Mark approves
+  // the wording it comes back through Cowork like the other ten and this
+  // comment goes; if he amends it, the amended text replaces what is here.
+  //
+  // Internal, to admin@taraniscapital.com, so no 'Dear' and no signoff, the
+  // same shape as 'nomination-pending' and 'submission-notification'.
+  'dd-digest': {
+    description:
+      'To ADMIN_NOTIFICATION_EMAIL, once each weekday morning when either bucket is '
+      + 'non-empty. DRAFT WORDING, awaiting approval; gated by DD_DIGEST_ENABLED.',
+    wired: false,
+    subject: (p) =>
+      `Due diligence: ${p.awaiting_taranis_count} awaiting Taranis, `
+      + `${p.awaiting_company_count} awaiting companies`,
+    blocks: (p) => [
+      { p: `Outstanding due diligence actions as at the morning of ${p.digest_date}.` },
+      {
+        lines: [
+          `Awaiting Taranis: ${p.awaiting_taranis_count}`,
+          `Awaiting companies: ${p.awaiting_company_count}`,
+        ],
+      },
+      { lines: p.company_lines },
+      {
+        p: `An item is flagged amber after ${p.taranis_amber_days} working day(s) with `
+         + `Taranis and red after ${p.taranis_red_days}. On the company side the flags are `
+         + `${p.company_amber_days} and ${p.company_red_days} calendar days, counted from `
+         + `the date the company was asked for something specific. Checklist items nobody `
+         + `has started are counted but not aged.`,
+      },
+      { button: { label: 'Open the dashboard', url: p.dashboard_url } },
     ],
   },
 };
