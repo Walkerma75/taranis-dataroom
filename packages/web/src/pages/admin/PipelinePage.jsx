@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
-  Typography, Card, Table, Button, Space, Tag, Select, Progress, Tooltip, Modal, Form, Input, message, Badge,
+  Typography, Card, Table, Button, Space, Tag, Select, Progress, Tooltip, Modal, Form, Input,
+  message, Badge, Checkbox,
 } from 'antd';
 import {
   PlusOutlined, CheckCircleTwoTone, CloseCircleTwoTone, DownloadOutlined, SearchOutlined,
@@ -147,6 +148,21 @@ export default function PipelinePage() {
   // which three.
   const [filteredInfo, setFilteredInfo] = useState({});
   const [sortedInfo, setSortedInfo] = useState(DEFAULT_SORT);
+
+  // Offboarded companies are hidden unless asked for.
+  //
+  // An offboarded counterparty is retained for eight years and never deleted,
+  // which is right, but it means the list grows a permanent tail of rows nobody
+  // can act on: their access is closed, no file can move and no user can be
+  // invited. Left in the default view they push the live pipeline down the page
+  // and dilute every count above it. They are one tick away rather than gone
+  // (Mark's instruction, 2 September 2026).
+  //
+  // Deliberately a separate control and not a Status column filter. The status
+  // filter is how an admin asks "show me only the suspended ones"; this is a
+  // standing preference about what the page is for, and the two would fight if
+  // ticking one silently rewrote the other.
+  const [showOffboarded, setShowOffboarded] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -362,9 +378,17 @@ export default function PipelinePage() {
     setSortedInfo(DEFAULT_SORT);
   };
 
+  // What the table is given, before its own column filters. Offboarded rows are
+  // removed here rather than by a column filter so that Clear filters and
+  // sorting cannot bring them back without the tick being changed.
+  const offboardedCount = companies.filter((c) => c.status === 'offboarded').length;
+  const listedCompanies = showOffboarded
+    ? companies
+    : companies.filter((c) => c.status !== 'offboarded');
+
   // The same predicates the table applies, so the count cannot disagree with
   // the rows underneath it.
-  const visibleRows = companies.filter((row) => columns.every((col) => {
+  const visibleRows = listedCompanies.filter((row) => columns.every((col) => {
     const picked = filteredInfo[col.key];
     if (!picked || !picked.length || !col.onFilter) return true;
     return picked.some((value) => col.onFilter(value, row));
@@ -407,27 +431,48 @@ export default function PipelinePage() {
         >
           <Text type="secondary" style={{ fontSize: 12 }}>
             {filtering
-              ? `Showing ${visibleRows.length} of ${companies.length} companies`
+              ? `Showing ${visibleRows.length} of ${listedCompanies.length} companies`
               : 'Newest activity first. Every column sorts and filters from its own header.'}
           </Text>
-          <Button type="link" size="small" style={{ padding: 0 }} onClick={clearAll}>
-            Clear filters and sorting
-          </Button>
+          <Space size={16}>
+            {(offboardedCount > 0 || showOffboarded) && (
+              <Checkbox
+                checked={showOffboarded}
+                onChange={(e) => setShowOffboarded(e.target.checked)}
+              >
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  Show offboarded ({offboardedCount})
+                </Text>
+              </Checkbox>
+            )}
+            <Button type="link" size="small" style={{ padding: 0 }} onClick={clearAll}>
+              Clear filters and sorting
+            </Button>
+          </Space>
         </div>
 
         <Table
           rowKey="id"
           columns={tableColumns}
-          dataSource={companies}
+          dataSource={listedCompanies}
           loading={loading}
           pagination={false}
           onChange={onTableChange}
           locale={{
-            emptyText: filtering
-              ? 'No company matches these filters.'
-              : (isAdmin
+            // The hidden-offboarded case comes first, because otherwise a
+            // pipeline whose companies are all offboarded reads as a pipeline
+            // that was never set up, and the fix is a tick nobody would think
+            // to look for.
+            emptyText: (() => {
+              if (listedCompanies.length === 0 && offboardedCount > 0) {
+                return `No active companies. ${offboardedCount} offboarded `
+                     + 'company(s) are hidden; tick Show offboarded to see them.';
+              }
+              if (filtering) return 'No company matches these filters.';
+              return isAdmin
                 ? 'No companies yet. Use Add a company to create the first one.'
-                : 'No companies yet.'),
+                : 'No companies yet.';
+            })(),
           }}
         />
       </Card>

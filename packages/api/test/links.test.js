@@ -17,6 +17,7 @@ import {
   companyReceiptsUrl,
   adminReviewUrl,
   adminNominationUrl,
+  dashboardUrl,
 } from '../src/services/links.js';
 
 const PROD = { PORTAL_URL: 'https://dataroom.taraniscapital.com' };
@@ -30,6 +31,9 @@ test('every email link is absolute and points at a real client route', () => {
   assert.equal(itemUrl('i-1', PROD), 'https://dataroom.taraniscapital.com/company/items/i-1');
   assert.equal(companyReceiptsUrl(PROD), 'https://dataroom.taraniscapital.com/company/receipts');
   assert.equal(adminReviewUrl(PROD), 'https://dataroom.taraniscapital.com/admin/review-queue');
+  // The daily digest links to the dashboard rather than the queue: it reports
+  // both sides of the exchange, and the queue only shows one of them.
+  assert.equal(dashboardUrl(PROD), 'https://dataroom.taraniscapital.com/dashboard');
   // A nomination is approved from inside the company it belongs to, never from
   // a shared list with a company picker (HANDOVER-C006 §3.2).
   assert.equal(

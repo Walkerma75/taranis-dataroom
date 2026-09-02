@@ -1547,9 +1547,36 @@ export default router;
 export const reviewQueueRouter = Router();
 reviewQueueRouter.use(requireAuth, rejectCompanyRole);
 
+/**
+ * Which statuses the queue shows.
+ *
+ * 'received' is the default and is what this endpoint has always returned, so
+ * an existing caller sees no change. 'in_review' exists because taking a file
+ * up used to make it disappear: the queue's own primary action sets 'in_review'
+ * and the row then left the only screen it appeared on, so a file somebody
+ * started reading and did not finish was visible nowhere but its company's
+ * Files tab. The dashboard counts both, and a tile that sends an admin to a
+ * screen showing fewer rows than the number they clicked is worse than no tile
+ * (Mark's decision, HANDOVER-C020 D3).
+ */
+const REVIEW_QUEUE_STATUSES = {
+  received: ['received'],
+  in_review: ['in_review'],
+  all: ['received', 'in_review'],
+};
+
 reviewQueueRouter.get('/', async (req, res) => {
-  const params = [];
-  let where = "f.upload_state = 'submitted' AND f.status = 'received' AND f.deleted_at IS NULL";
+  const requested = String(req.query.status || 'received');
+  const statuses = REVIEW_QUEUE_STATUSES[requested];
+  if (!statuses) {
+    return res.status(400).json({
+      error: `Unknown status filter. Use one of: ${Object.keys(REVIEW_QUEUE_STATUSES).join(', ')}.`,
+    });
+  }
+
+  const params = [statuses];
+  let where = "f.upload_state = 'submitted' AND f.deleted_at IS NULL"
+            + ' AND f.status = ANY($1::file_status[])';
 
   if (req.query.fundId) {
     params.push(req.query.fundId);
@@ -1560,7 +1587,7 @@ reviewQueueRouter.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT f.id, f.filename, f.description, f.size_bytes, f.scan_state,
-              f.scan_backend, f.created_at,
+              f.scan_backend, f.created_at, f.status,
               c.id AS company_id, c.legal_name,
               i.ref AS item_ref, i.section AS item_section,
               b.receipt_ref, b.submitted_at
@@ -1585,6 +1612,10 @@ reviewQueueRouter.get('/', async (req, res) => {
         filename: f.filename,
         description: f.description,
         sizeBytes: Number(f.size_bytes),
+        // Carried so the queue can label a row when it is showing more than one
+        // status. With the default filter every row is 'received' and the column
+        // is hidden, so nothing changes for the caller that does not ask.
+        status: f.status,
         scanState: f.scan_state,
         scanBackend: f.scan_backend,
         downloadable: decision.allowed,
