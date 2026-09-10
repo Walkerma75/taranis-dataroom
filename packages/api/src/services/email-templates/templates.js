@@ -1,5 +1,5 @@
 /**
- * The eleven approved templates, and two drafts awaiting approval.
+ * The thirteen approved templates.
  *
  * ---------------------------------------------------------------------------
  * DO NOT EDIT THE WORDING IN THIS FILE
@@ -33,11 +33,11 @@
  * precedent. Its caller is additionally gated by `DD_DIGEST_ENABLED`, which is
  * an operational switch for where the digest sends, not a review gate.
  *
- * TWELVE AND THIRTEEN ARE DRAFTS. `status-digest` and `upload-digest` are the
- * session digests of HANDOVER-CW025, drafted on the code side the way
- * `dd-digest` was and set out in HANDOVER-C025 §6 for Mark's approval. Digests
- * are on as soon as they merge, so the approval has to come BEFORE the merge.
- * Once approved they are frozen on the same terms as the rest.
+ * TWELVE AND THIRTEEN CAME THE SAME WAY AS ELEVEN. `status-digest` and
+ * `upload-digest` are the session digests of HANDOVER-CW025, drafted on the
+ * code side as `dd-digest` was, set out in HANDOVER-C025 §6 and approved by Mark
+ * on 10 September 2026 as drafted, before the merge because digests are on from
+ * deploy. They are frozen now on the same terms as the rest.
  */
 import { renderHtml, renderText } from './layout.js';
 
@@ -312,7 +312,8 @@ export const TEMPLATES = {
   },
 
   // 12 ------------------------------------------------------------------
-  // DRAFT, HANDOVER-C025 §6.1. Not approved yet; must be before merge.
+  // APPROVED BY MARK, 10 SEPTEMBER 2026, as drafted in HANDOVER-C025 §6.1.
+  // Frozen: a change comes back through Cowork like any other.
   //
   // A sitting in which two or more files end at Attention needed or Completed.
   // A sitting with one such file is sent with `status-attention` or
@@ -321,7 +322,7 @@ export const TEMPLATES = {
   'status-digest': {
     description:
       'To the uploader and each Company Administrator, when two or more files reach '
-      + 'Attention needed or Completed in one sitting (HANDOVER-CW025). DRAFT, awaiting approval.',
+      + 'Attention needed or Completed in one sitting (HANDOVER-CW025). Approved 10 September 2026.',
     subject: (p) => {
       if (p.attention_count > 0 && p.accepted_count > 0) {
         return `Review update: action needed on ${p.attention_count} file(s), ${p.accepted_count} accepted`;
@@ -364,7 +365,8 @@ export const TEMPLATES = {
   },
 
   // 13 ------------------------------------------------------------------
-  // DRAFT, HANDOVER-C025 §6.2. Not approved yet; must be before merge.
+  // APPROVED BY MARK, 10 SEPTEMBER 2026, as drafted in HANDOVER-C025 §6.2.
+  // Frozen: a change comes back through Cowork like any other.
   //
   // Internal, to the admin address, so no 'Dear' and no sign-off, the same
   // shape as `upload-notification`. Every upload in the sitting is listed with
@@ -375,7 +377,7 @@ export const TEMPLATES = {
   'upload-digest': {
     description:
       'To admin@taraniscapital.com, one per company per upload sitting (HANDOVER-CW025). '
-      + 'DRAFT, awaiting approval.',
+      + 'Approved 10 September 2026.',
     subject: (p) => `Uploads: ${p.company_name}, ${p.file_count} file(s)`,
     blocks: (p) => {
       const closing = uploadClosing(p);

@@ -81,7 +81,7 @@ function fullPayload(overrides = {}) {
     company_red_days: 7,
     dashboard_url: 'https://dataroom.taraniscapital.com/dashboard',
 
-    // The two session-digest drafts (HANDOVER-C025 §6).
+    // The two session digests (HANDOVER-C025 §6).
     reviewed_count: 3,
     attention_count: 1,
     accepted_count: 2,
@@ -133,10 +133,10 @@ test('the digest template follows the ten, and is wired', () => {
   assert.equal(TEMPLATES['dd-digest'].wired, undefined);
 });
 
-test('the two session-digest drafts come last, and are wired', () => {
+test('the two session digests come last, and are wired', () => {
   // HANDOVER-CW025. Drafted on the code side like `dd-digest`, set out in
-  // HANDOVER-C025 §6, and to be approved before merge because digests are on
-  // from the moment they deploy.
+  // HANDOVER-C025 §6 and approved by Mark on 10 September 2026 as drafted,
+  // before merge because digests are on from the moment they deploy.
   assert.equal(TEMPLATE_IDS.length, 13);
   assert.deepEqual(TEMPLATE_IDS.slice(11), ['status-digest', 'upload-digest']);
   assert.equal(TEMPLATES['status-digest'].wired, undefined);
@@ -360,10 +360,10 @@ test('the conditional note in new-items appears only when there is one', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The session-digest drafts (HANDOVER-C025 §6)
+// The session digests (HANDOVER-C025 §6), approved 10 September 2026
 //
-// Asserted as literals like the approved ten, so the wording Mark approves is
-// the wording that ships and any later edit is a deliberate one.
+// Asserted as literals like the approved ten, so the wording Mark approved is
+// the wording that ships and any later edit fails the suite.
 // ---------------------------------------------------------------------------
 
 test('status-digest subject says what the sitting contains', () => {
@@ -379,7 +379,7 @@ test('status-digest subject says what the sitting contains', () => {
   );
 });
 
-test('status-digest body matches the draft, attention first, every note quoted', () => {
+test('status-digest body matches the approved wording, attention first, every note quoted', () => {
   const { text } = renderTemplate('status-digest', fullPayload());
 
   assert.ok(text.startsWith('Dear Alex,'));
@@ -446,7 +446,7 @@ test('a file sent as additional material says so rather than printing an empty i
   assert.ok(!text.includes('Checklist item: ,'));
 });
 
-test('upload-digest matches the draft and gives each file its state', () => {
+test('upload-digest matches the approved wording and gives each file its state', () => {
   const { subject, text } = renderTemplate('upload-digest', fullPayload({
     file_count: 3,
     files: [
@@ -493,7 +493,7 @@ test('upload-digest closing line follows what the list contains', () => {
   assert.ok(!allRemoved.includes('formally submitted'));
 });
 
-test('neither digest draft uses an em dash or leaves a placeholder', () => {
+test('neither session digest uses an em dash or leaves a placeholder', () => {
   for (const id of ['status-digest', 'upload-digest']) {
     const { subject, text, html } = renderTemplate(id, fullPayload());
     const body = text.split('\n---\n')[0];
