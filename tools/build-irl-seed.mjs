@@ -21,6 +21,12 @@
 import fs from 'fs';
 import path from 'path';
 import ExcelJS from 'exceljs';
+// The same guard the API uses, imported rather than restated: a term added to
+// COMPANY_UNSAFE_PATTERNS has to take effect here too, or the spreadsheet
+// becomes the way round it (HANDOVER-CW019 §3.3).
+import {
+  findUnsafeRowText, describeUnsafe,
+} from '../packages/api/src/services/company-visible-text.js';
 
 const COLUMNS = [
   'section', 'ref', 'description', 'priority',
@@ -96,6 +102,10 @@ for (const item of items) {
   if (!Number.isInteger(item.sort_order)) {
     problems.push(`ref ${item.ref}: sort_order is not an integer`);
   }
+  // A CASS score or an internal source in a company-visible column. The master
+  // is the earliest point this can be caught, and catching it here means the
+  // deal team fixes the spreadsheet rather than the committed artefact.
+  for (const hit of findUnsafeRowText(item)) problems.push(describeUnsafe(hit));
 }
 if (problems.length) {
   console.error('Refusing to write the seed:');
