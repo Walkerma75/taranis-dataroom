@@ -11,6 +11,7 @@
  */
 import path from 'path';
 import { pool } from '../db.js';
+import { isAcceptedTimetable } from './company-statements.js';
 
 // ---------------------------------------------------------------------------
 // Activation gates
@@ -158,16 +159,32 @@ export function isBaselineState(state) {
  * inheriting anything from the retired version. That is honest — nothing
  * currently submitted answers the request — and it is why the baseline had to
  * become a stored fact (migration 016).
+ *
+ * "CANNOT PROVIDE" RESPONSES (HANDOVER-CW026 §3.7). A response counts exactly
+ * like a file at Received, In review and Attention needed, and an accepted one
+ * counts like a completed file, with one exception. Accepting a
+ * 'not_yet_available' response accepts the company's TIMETABLE; the document
+ * has still not arrived. So an accepted one is left out of the reckoning, and
+ * if what remains would derive to Completed the item falls back to its
+ * baseline instead. A completed 2024 accounts file plus an accepted "2025
+ * accounts expected 31 March 2027" is therefore not a completed item: it sits
+ * with the company, counted but not aged, until the document replaces the
+ * response.
  */
 export function deriveItemState(files = [], baselineState = 'outstanding') {
   const submitted = files.filter(
     (f) => f.upload_state === 'submitted' && !f.deleted_at && f.status !== 'superseded'
   );
 
-  if (submitted.length === 0) return baselineState;
-  if (submitted.some((f) => f.status === 'attention_needed')) return 'attention_needed';
-  if (submitted.every((f) => f.status === 'completed')) return 'completed';
-  if (submitted.some((f) => f.status === 'in_review')) return 'in_review';
+  const timetableAccepted = submitted.some(isAcceptedTimetable);
+  const counted = submitted.filter((f) => !isAcceptedTimetable(f));
+
+  if (counted.length === 0) return baselineState;
+  if (counted.some((f) => f.status === 'attention_needed')) return 'attention_needed';
+  if (counted.every((f) => f.status === 'completed')) {
+    return timetableAccepted ? baselineState : 'completed';
+  }
+  if (counted.some((f) => f.status === 'in_review')) return 'in_review';
   return 'received';
 }
 
@@ -179,8 +196,11 @@ export async function recomputeItemState(itemId, client = pool) {
   );
   if (!item) return null;
 
+  // `kind` and `statement_reason` because an accepted not-yet-available
+  // response is read differently from everything else (CW026 §3.7).
   const { rows: files } = await client.query(
-    `SELECT upload_state, status, deleted_at FROM company_files WHERE irl_item_id = $1`,
+    `SELECT upload_state, status, deleted_at, kind, statement_reason
+       FROM company_files WHERE irl_item_id = $1`,
     [itemId]
   );
 

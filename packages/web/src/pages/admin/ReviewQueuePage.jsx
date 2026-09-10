@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  Typography, Card, Table, Button, Space, Tag, Select, Modal, Form, Input, message, Alert,
+  Typography, Card, Table, Button, Space, Tag, Select, message, Alert,
   Tooltip, Segmented,
 } from 'antd';
 import { DownloadOutlined, WarningOutlined } from '@ant-design/icons';
@@ -9,10 +9,11 @@ import { api, apiFetch } from '../../api/client.js';
 import {
   UNSCANNED_WARNING, UNSCANNED_WARNING_DETAIL, isUnscanned,
   scanLabel, scanColour, scanBackendHint,
-  FILE_STATUS_OPTIONS, noteHintFor, noteRequiredFor, NOTE_REQUIRED_MESSAGE,
-  STATE_LABELS, STATE_COLOURS,
+  STATE_COLOURS, fileStatusLabel, isResponse,
   formatBytes, formatUtc,
 } from '../company/irlDisplay.js';
+import { NoDocumentTag, ResponseMeta } from '../company/ResponseParts.jsx';
+import FileStatusModal from '../../components/FileStatusModal.jsx';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -50,7 +51,6 @@ export default function ReviewQueuePage() {
   const [loading, setLoading] = useState(true);
   const [statusFile, setStatusFile] = useState(null);
   const [downloadingFile, setDownloadingFile] = useState(null);
-  const [form] = Form.useForm();
 
   // In the URL rather than in state, so the dashboard tile can link straight to
   // the view it counted and so a reviewer can keep the link.
@@ -87,20 +87,6 @@ export default function ReviewQueuePage() {
   useEffect(() => {
     api.get('/funds').then((r) => r.json()).then(setFunds).catch(() => {});
   }, []);
-
-  const setStatus = async (values) => {
-    try {
-      const res = await api.patch(`/company-files/${statusFile.id}/status`, values);
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error);
-      message.success('Status updated');
-      setStatusFile(null);
-      form.resetFields();
-      load();
-    } catch (err) {
-      message.error(err.message);
-    }
-  };
 
   /**
    * Open a queued file. Same endpoint and same server-published decision as the
@@ -144,7 +130,18 @@ export default function ReviewQueuePage() {
       width: 90,
       render: (r) => (r ? <Text style={{ fontFamily: 'monospace' }}>{r}</Text> : <Tag>Extra</Tag>),
     },
-    { title: 'File', dataIndex: 'filename' },
+    {
+      title: 'File',
+      dataIndex: 'filename',
+      // A "cannot provide" response carries its label here, with the tag, the
+      // reason and its date or related item (HANDOVER-CW026 §3.6).
+      render: (filename, row) => (isResponse(row) ? (
+        <Space direction="vertical" size={2}>
+          <Space size={6} wrap><Text>{filename}</Text><NoDocumentTag /></Space>
+          <ResponseMeta file={row} />
+        </Space>
+      ) : filename),
+    },
     { title: 'Description', dataIndex: 'description' },
     { title: 'Size', dataIndex: 'sizeBytes', width: 90, render: formatBytes },
     {
@@ -162,9 +159,9 @@ export default function ReviewQueuePage() {
         title: 'Status',
         dataIndex: 'status',
         width: 130,
-        render: (s) => (
+        render: (s, row) => (
           <Tag color={STATE_COLOURS[s]} style={{ color: '#fff', borderColor: 'transparent' }}>
-            {STATE_LABELS[s] || s}
+            {fileStatusLabel(s, row)}
           </Tag>
         ),
       }]
@@ -174,14 +171,15 @@ export default function ReviewQueuePage() {
       dataIndex: 'scanState',
       width: 110,
       // Carried here as well as on the Files tab so the download button being
-      // disabled is explicable on the row rather than only in its tooltip.
-      render: (s, row) => (
+      // disabled is explicable on the row rather than only in its tooltip. A
+      // response has nothing to scan, so it shows no chip at all.
+      render: (s, row) => (isResponse(row) ? null : (
         <Tooltip title={scanBackendHint(row)}>
           <Tag color={scanColour(s)} style={{ color: '#fff', borderColor: 'transparent' }}>
             {scanLabel(s)}
           </Tag>
         </Tooltip>
-      ),
+      )),
     },
     {
       title: '',
@@ -189,18 +187,21 @@ export default function ReviewQueuePage() {
       width: 210,
       render: (_, row) => (
         <Space size={4}>
-          <Tooltip title={row.downloadBlockedReason}>
-            <Button
-              size="small"
-              icon={<DownloadOutlined />}
-              disabled={!row.downloadable}
-              loading={downloadingFile === row.id}
-              onClick={() => downloadFile(row)}
-            >
-              Download
-            </Button>
-          </Tooltip>
-          <Button size="small" onClick={() => { setStatusFile(row); form.setFieldsValue({ status: 'in_review' }); }}>
+          {/* No download for a response, ever: there is no file. */}
+          {!isResponse(row) && (
+            <Tooltip title={row.downloadBlockedReason}>
+              <Button
+                size="small"
+                icon={<DownloadOutlined />}
+                disabled={!row.downloadable}
+                loading={downloadingFile === row.id}
+                onClick={() => downloadFile(row)}
+              >
+                Download
+              </Button>
+            </Tooltip>
+          )}
+          <Button size="small" onClick={() => setStatusFile(row)}>
             Set status
           </Button>
         </Space>
@@ -281,33 +282,12 @@ export default function ReviewQueuePage() {
         />
       </Card>
 
-      <Modal
-        title={`Set status: ${statusFile?.filename || ''}`}
-        open={!!statusFile}
-        onCancel={() => setStatusFile(null)}
-        onOk={() => form.submit()}
-        okText="Save"
-      >
-        <Form form={form} layout="vertical" onFinish={setStatus} requiredMark={false}>
-          <Form.Item name="status" label="Status" rules={[{ required: true, message: 'Please choose a status' }]}>
-            <Select options={FILE_STATUS_OPTIONS} />
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, next) => prev.status !== next.status}>
-            {({ getFieldValue }) => (
-              <Form.Item
-                name="note"
-                label="Note"
-                extra={noteHintFor(getFieldValue('status'))}
-                rules={noteRequiredFor(getFieldValue('status'))
-                  ? [{ required: true, message: NOTE_REQUIRED_MESSAGE }]
-                  : []}
-              >
-                <Input.TextArea rows={3} />
-              </Form.Item>
-            )}
-          </Form.Item>
-        </Form>
-      </Modal>
+      <FileStatusModal
+        file={statusFile}
+        initialStatus="in_review"
+        onClose={() => setStatusFile(null)}
+        onSaved={() => { setStatusFile(null); load(); }}
+      />
     </Space>
   );
 }

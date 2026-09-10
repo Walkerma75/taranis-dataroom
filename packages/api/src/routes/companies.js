@@ -48,6 +48,15 @@ import {
   queueDigestEvents,
   sessionDigestsEnabled,
 } from '../services/notification-digests.js';
+import { isStatement, statementFields } from '../services/company-statements.js';
+
+/**
+ * What a response row reports instead of a scan-based download decision. There
+ * are no bytes, so there is nothing to download and nothing was scanned; the
+ * reason is a code rather than a sentence so a client can branch on it
+ * (HANDOVER-CW026 §3.3).
+ */
+const NO_FILE = Object.freeze({ allowed: false, unscanned: false, reason: 'no_file' });
 import {
   canActivate,
   activationRefusalMessage,
@@ -63,6 +72,7 @@ import {
   buildPrefilledWorkbook,
   buildGapsWorkbook,
   exportableItem,
+  companyResponses,
   GapsContentError,
 } from '../services/irl-exports.js';
 import {
@@ -965,7 +975,16 @@ router.get('/:id/irl-items', requireCompanyAccess(), async (req, res) => {
       `SELECT i.*,
               (SELECT COUNT(*) FROM company_files f
                 WHERE f.irl_item_id = i.id AND f.deleted_at IS NULL
-                  AND f.upload_state = 'submitted') AS submitted_files
+                  AND f.upload_state = 'submitted') AS submitted_files,
+              -- "Expected by the company", from the current submitted
+              -- not-yet-available response (CW026 §3.7 item 4). A string, so
+              -- the date is not shifted by the server's zone.
+              (SELECT to_char(f.expected_date, 'YYYY-MM-DD') FROM company_files f
+                WHERE f.irl_item_id = i.id AND f.kind = 'statement'
+                  AND f.statement_reason = 'not_yet_available'
+                  AND f.upload_state = 'submitted' AND f.deleted_at IS NULL
+                  AND f.status <> 'superseded'
+                ORDER BY f.created_at DESC LIMIT 1) AS expected_by
        FROM company_irl_items i WHERE i.company_id = $1 ORDER BY i.sort_order`,
       [req.params.id]
     );
@@ -1215,11 +1234,13 @@ router.get('/:id/files', requireCompanyAccess(), async (req, res) => {
     const { rows } = await pool.query(
       `SELECT f.*, u.display_name AS uploaded_by_name,
               i.ref AS item_ref, i.section AS item_section,
-              b.receipt_ref, b.submitted_at
+              b.receipt_ref, b.submitted_at,
+              ri.ref AS related_item_ref
        FROM company_files f
        JOIN users u ON u.id = f.uploaded_by
        LEFT JOIN company_irl_items i ON i.id = f.irl_item_id
        LEFT JOIN submission_batches b ON b.id = f.batch_id
+       LEFT JOIN company_irl_items ri ON ri.id = f.related_item_id AND ri.company_id = f.company_id
        WHERE f.company_id = $1 AND f.deleted_at IS NULL
          AND f.upload_state = 'submitted'
        ORDER BY b.submitted_at DESC NULLS LAST, f.created_at DESC`,
@@ -1227,12 +1248,13 @@ router.get('/:id/files', requireCompanyAccess(), async (req, res) => {
     );
 
     res.json(rows.map((f) => {
-      const decision = downloadDecision(f.scan_state);
+      // A response has no bytes: never downloadable, never scanned.
+      const decision = isStatement(f) ? NO_FILE : downloadDecision(f.scan_state);
       return {
         id: f.id,
         filename: f.filename,
         description: f.description,
-        sizeBytes: Number(f.size_bytes),
+        ...statementFields(f),
         contentType: f.content_type,
         version: f.version,
         supersedes: f.supersedes,
@@ -1556,14 +1578,29 @@ router.get('/:id/export', requireCompanyAccess(), async (req, res) => {
     if (!company) return res.status(404).json({ error: 'Company not found' });
 
     const { rows } = await pool.query(
-      `SELECT section, ref, description, priority, state, already_held,
+      `SELECT id, section, ref, description, priority, state, already_held,
               source_document, note_for_company
        FROM company_irl_items WHERE company_id = $1 ORDER BY sort_order`,
       [req.params.id]
     );
+
+    // The company's formal "cannot provide" responses, for PRE-FILLED's last
+    // column (CW026 §3.8). GAPS never reads it.
+    const { rows: statements } = format === 'prefilled'
+      ? await pool.query(
+        `SELECT irl_item_id, filename, description, kind, upload_state, status, deleted_at
+           FROM company_files
+          WHERE company_id = $1 AND kind = 'statement' AND upload_state = 'submitted'
+            AND deleted_at IS NULL AND status <> 'superseded'
+          ORDER BY created_at`,
+        [req.params.id]
+      )
+      : { rows: [] };
+    const responses = companyResponses(statements);
+
     // internal_note is not selected above and is not part of the exportable
     // shape, so it cannot reach either sheet.
-    const items = rows.map(exportableItem);
+    const items = rows.map((row) => exportableItem(row, { companyResponse: responses.get(row.id) || null }));
 
     const buffer = format === 'gaps'
       ? await buildGapsWorkbook({ companyName: company.legal_name, items })
@@ -1661,14 +1698,17 @@ reviewQueueRouter.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT f.id, f.filename, f.description, f.size_bytes, f.scan_state,
-              f.scan_backend, f.created_at, f.status,
+              f.scan_backend, f.created_at, f.status, f.irl_item_id,
+              f.kind, f.statement_reason, f.expected_date, f.related_item_id,
               c.id AS company_id, c.legal_name,
               i.ref AS item_ref, i.section AS item_section,
-              b.receipt_ref, b.submitted_at
+              b.receipt_ref, b.submitted_at,
+              ri.ref AS related_item_ref
        FROM company_files f
        JOIN companies c ON c.id = f.company_id
        LEFT JOIN company_irl_items i ON i.id = f.irl_item_id
        LEFT JOIN submission_batches b ON b.id = f.batch_id
+       LEFT JOIN company_irl_items ri ON ri.id = f.related_item_id AND ri.company_id = f.company_id
        WHERE ${where} ${visibility}
        ORDER BY b.submitted_at ASC NULLS LAST`,
       params
@@ -1676,16 +1716,18 @@ reviewQueueRouter.get('/', async (req, res) => {
 
     // Same server-published download decision as the Files tab, for the same
     // reason: this is the other screen a reviewer opens a file from, and the two
-    // must never disagree about what is downloadable.
+    // must never disagree about what is downloadable. A response has nothing to
+    // download (CW026 §3.3).
     res.json(rows.map((f) => {
-      const decision = downloadDecision(f.scan_state);
+      const decision = isStatement(f) ? NO_FILE : downloadDecision(f.scan_state);
       return {
         id: f.id,
         companyId: f.company_id,
         companyName: f.legal_name,
+        irlItemId: f.irl_item_id,
         filename: f.filename,
         description: f.description,
-        sizeBytes: Number(f.size_bytes),
+        ...statementFields(f),
         // Carried so the queue can label a row when it is showing more than one
         // status. With the default filter every row is 'received' and the column
         // is hidden, so nothing changes for the caller that does not ask.
@@ -2023,9 +2065,17 @@ async function queueStatusDigestEvents(client, { file }) {
  * test (HANDOVER-CW010 §2). It is not a one-way door — setting the file back to
  * any other status returns it to the reckoning — and a note stays optional,
  * because the fact a newer version exists is the explanation.
+ *
+ * "CANNOT PROVIDE" RESPONSES (HANDOVER-CW026 §3.6). Set exactly as a file is.
+ * Accepting a 'not_applicable' response can also mark its item Not applicable,
+ * with `alsoMarkItemNotApplicable: true`, in the same transaction and audited,
+ * so the reviewer's decision is one explicit action. And a superseded response
+ * cannot be set back while its item already has a current response, which
+ * would leave two.
  */
 companyFilesRouter.patch('/:fileId/status', async (req, res) => {
   const { status, note } = req.body;
+  const alsoMarkItemNotApplicable = req.body?.alsoMarkItemNotApplicable === true;
   const valid = ['received', 'in_review', 'attention_needed', 'completed', 'superseded'];
   if (!valid.includes(status)) {
     return res.status(400).json({ error: 'Invalid status' });
@@ -2044,6 +2094,14 @@ companyFilesRouter.patch('/:fileId/status', async (req, res) => {
     return res.status(409).json({ error: 'This file has not been formally submitted yet' });
   }
 
+  if (alsoMarkItemNotApplicable && !(
+    status === 'completed' && isStatement(file) && file.statement_reason === 'not_applicable'
+  )) {
+    return res.status(400).json({
+      error: 'Only accepting a "does not apply" response can also mark its item Not applicable.',
+    });
+  }
+
   // Only these two statuses notify. 'received', 'in_review' and 'superseded'
   // are internal progress that a company can see in its workspace and does not
   // need an email about, and there is no approved template for them.
@@ -2054,11 +2112,46 @@ companyFilesRouter.patch('/:fileId/status', async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    // Bringing a superseded response back would make two current responses on
+    // one item. Checked under a lock on the item so it cannot race a new one.
+    if (isStatement(file) && file.status === 'superseded' && status !== 'superseded') {
+      await client.query(
+        `SELECT id FROM company_irl_items WHERE id = $1 FOR UPDATE`, [file.irl_item_id]
+      );
+      const { rows: others } = await client.query(
+        `SELECT id FROM company_files
+          WHERE irl_item_id = $1 AND kind = 'statement' AND id <> $2
+            AND deleted_at IS NULL AND (status IS NULL OR status <> 'superseded')
+          LIMIT 1`,
+        [file.irl_item_id, file.id]
+      );
+      if (others.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'This item already has a current response. Supersede that one first.',
+        });
+      }
+    }
+
     await client.query(`UPDATE company_files SET status = $2 WHERE id = $1`, [file.id, status]);
     await client.query(
       `INSERT INTO file_status_history (file_id, status, note, set_by) VALUES ($1, $2, $3, $4)`,
       [file.id, status, note?.trim() || null, req.user.sub]
     );
+
+    // The reviewer's tick on accepting a "does not apply" response: the item
+    // becomes Not applicable in the same transaction, so the acceptance and the
+    // decision about the item cannot be separated.
+    let itemMarked = null;
+    if (alsoMarkItemNotApplicable) {
+      const { rows: [marked] } = await client.query(
+        `UPDATE company_irl_items SET state = 'not_applicable', updated_at = NOW()
+          WHERE id = $1 AND company_id = $2
+          RETURNING ref`,
+        [file.irl_item_id, file.company_id]
+      );
+      itemMarked = marked || null;
+    }
 
     // Session digests: the event is written with the change (see
     // queueStatusDigestEvents). The message itself is built when the sitting
@@ -2066,6 +2159,22 @@ companyFilesRouter.patch('/:fileId/status', async (req, res) => {
     if (notifies && digests) await queueStatusDigestEvents(client, { file });
 
     await client.query('COMMIT');
+
+    if (itemMarked) {
+      await logAudit({
+        action: 'company.updated',
+        userId: req.user.sub,
+        resource: 'company',
+        resourceId: file.company_id,
+        detail: {
+          itemRef: itemMarked.ref,
+          state: 'not_applicable',
+          via: 'statement_accepted',
+          fileId: file.id,
+        },
+        ip: req.ip,
+      });
+    }
 
     if (file.irl_item_id) await recomputeItemState(file.irl_item_id);
 
@@ -2100,6 +2209,8 @@ companyFilesRouter.patch('/:fileId/status', async (req, res) => {
         from: file.status,
         to: status,
         hasNote: !!note,
+        kind: file.kind || 'file',
+        ...(itemMarked ? { itemMarkedNotApplicable: itemMarked.ref } : {}),
       },
       ip: req.ip,
     });
@@ -2142,6 +2253,15 @@ companyFilesRouter.get('/:fileId/history', async (req, res) => {
 companyFilesRouter.get('/:fileId/download', async (req, res) => {
   const file = await loadFileForTaranis(req, res, { write: false });
   if (!file) return;
+
+  // A "cannot provide" response has no bytes. Refused here, before storage is
+  // touched, rather than left to fail on a NULL key (HANDOVER-CW026 §3.3).
+  if (isStatement(file)) {
+    return res.status(409).json({
+      error: 'This is a response saying the document cannot be provided. There is no file to download.',
+      code: 'no_file',
+    });
+  }
 
   const { downloadDecision, getScanner } = await import('../services/scanner.js');
   const decision = downloadDecision(file.scan_state);

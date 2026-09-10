@@ -18,9 +18,11 @@ import {
   isOffDomain, isPendingNomination, inviteBlockedReason,
   UNSCANNED_WARNING, UNSCANNED_WARNING_DETAIL, isUnscanned,
   scanLabel, scanColour, scanBackendHint,
-  FILE_STATUS_OPTIONS, noteHintFor, noteRequiredFor, NOTE_REQUIRED_MESSAGE,
+  isResponse, fileStatusLabel, expectedByText,
   formatBytes, formatUtc,
 } from '../company/irlDisplay.js';
+import { NoDocumentTag, ResponseMeta } from '../company/ResponseParts.jsx';
+import FileStatusModal from '../../components/FileStatusModal.jsx';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -65,7 +67,6 @@ export default function CompanyDetailPage() {
   const [withdrawDoc, setWithdrawDoc] = useState(null);
   const [downloadingFile, setDownloadingFile] = useState(null);
   const [inviteForm] = Form.useForm();
-  const [statusForm] = Form.useForm();
   const [publishForm] = Form.useForm();
   const [withdrawForm] = Form.useForm();
 
@@ -165,20 +166,6 @@ export default function CompanyDetailPage() {
       }
     } catch {
       setExistingAccount(null);
-    }
-  };
-
-  const setFileStatus = async (values) => {
-    try {
-      const res = await api.patch(`/company-files/${statusFile.id}/status`, values);
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error);
-      message.success('Status updated');
-      setStatusFile(null);
-      statusForm.resetFields();
-      load();
-    } catch (err) {
-      message.error(err.message);
     }
   };
 
@@ -321,7 +308,18 @@ export default function CompanyDetailPage() {
       columns={[
         { title: 'Ref', dataIndex: 'ref', width: 80, render: (r) => <Text style={{ fontFamily: 'monospace' }}>{r}</Text> },
         { title: 'Section', dataIndex: 'section', width: 220 },
-        { title: 'Information requested', dataIndex: 'description' },
+        {
+          title: 'Information requested',
+          dataIndex: 'description',
+          // "Expected by the company", from an accepted or pending
+          // not-yet-available response (HANDOVER-CW026 §3.7 item 4).
+          render: (description, row) => (row.expected_by ? (
+            <Space direction="vertical" size={0}>
+              <span>{description}</span>
+              <Text type="secondary">{expectedByText(row.expected_by)}</Text>
+            </Space>
+          ) : description),
+        },
         {
           title: 'Priority',
           dataIndex: 'priority',
@@ -421,11 +419,17 @@ export default function CompanyDetailPage() {
             dataIndex: 'filename',
             // A superseded version keeps its own row, so two rows can carry the
             // same filename. The version number is the only thing that tells
-            // them apart, and both stay downloadable.
+            // them apart, and both stay downloadable. A "cannot provide"
+            // response carries its label here, with the tag, the reason and its
+            // date or related item (HANDOVER-CW026 §3.6).
             render: (filename, row) => (
-              <Space size={6}>
-                <Text>{filename}</Text>
-                {row.version > 1 && <Tag>v{row.version}</Tag>}
+              <Space direction="vertical" size={2}>
+                <Space size={6} wrap>
+                  <Text>{filename}</Text>
+                  {isResponse(row) && <NoDocumentTag />}
+                  {row.version > 1 && <Tag>v{row.version}</Tag>}
+                </Space>
+                <ResponseMeta file={row} />
               </Space>
             ),
           },
@@ -437,21 +441,22 @@ export default function CompanyDetailPage() {
             title: 'Scan',
             dataIndex: 'scanState',
             width: 110,
-            render: (s, row) => (
+            // A response has nothing to scan, so it shows no chip at all.
+            render: (s, row) => (isResponse(row) ? null : (
               <Tooltip title={scanBackendHint(row)}>
                 <Tag color={scanColour(s)} style={{ color: '#fff', borderColor: 'transparent' }}>
                   {scanLabel(s)}
                 </Tag>
               </Tooltip>
-            ),
+            )),
           },
           {
             title: 'Status',
             dataIndex: 'status',
             width: 160,
-            render: (status) => (
+            render: (status, row) => (
               <Tag color={STATE_COLOURS[status]} style={{ color: '#fff', borderColor: 'transparent' }}>
-                {STATE_LABELS[status]}
+                {fileStatusLabel(status, row)}
               </Tag>
             ),
           },
@@ -464,19 +469,22 @@ export default function CompanyDetailPage() {
             // documents; the API agrees, resolving the download at read level.
             render: (_, row) => (
               <Space size={4}>
-                <Tooltip title={row.downloadBlockedReason}>
-                  <Button
-                    size="small"
-                    icon={<DownloadOutlined />}
-                    disabled={!row.downloadable}
-                    loading={downloadingFile === row.id}
-                    onClick={() => downloadFile(row)}
-                  >
-                    Download
-                  </Button>
-                </Tooltip>
+                {/* No download for a response, ever: there is no file. */}
+                {!isResponse(row) && (
+                  <Tooltip title={row.downloadBlockedReason}>
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      disabled={!row.downloadable}
+                      loading={downloadingFile === row.id}
+                      onClick={() => downloadFile(row)}
+                    >
+                      Download
+                    </Button>
+                  </Tooltip>
+                )}
                 {canWrite && (
-                  <Button size="small" onClick={() => { setStatusFile(row); statusForm.setFieldsValue({ status: row.status }); }}>
+                  <Button size="small" onClick={() => setStatusFile(row)}>
                     Set status
                   </Button>
                 )}
@@ -1073,36 +1081,11 @@ export default function CompanyDetailPage() {
         </Form>
       </Modal>
 
-      <Modal
-        title={`Set status: ${statusFile?.filename || ''}`}
-        open={!!statusFile}
-        onCancel={() => setStatusFile(null)}
-        onOk={() => statusForm.submit()}
-        okText="Save"
-      >
-        <Form form={statusForm} layout="vertical" onFinish={setFileStatus} requiredMark={false}>
-          <Form.Item name="status" label="Status" rules={[{ required: true, message: 'Please choose a status' }]}>
-            <Select options={FILE_STATUS_OPTIONS} />
-          </Form.Item>
-          <Form.Item
-            noStyle
-            shouldUpdate={(prev, next) => prev.status !== next.status}
-          >
-            {({ getFieldValue }) => (
-              <Form.Item
-                name="note"
-                label="Note"
-                extra={noteHintFor(getFieldValue('status'))}
-                rules={noteRequiredFor(getFieldValue('status'))
-                  ? [{ required: true, message: NOTE_REQUIRED_MESSAGE }]
-                  : []}
-              >
-                <Input.TextArea rows={3} />
-              </Form.Item>
-            )}
-          </Form.Item>
-        </Form>
-      </Modal>
+      <FileStatusModal
+        file={statusFile}
+        onClose={() => setStatusFile(null)}
+        onSaved={() => { setStatusFile(null); load(); }}
+      />
     </Space>
   );
 }

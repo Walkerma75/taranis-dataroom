@@ -6,7 +6,10 @@ import { SendOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../api/client.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { formatBytes, formatUtc } from './irlDisplay.js';
+import { formatBytes, formatUtc, isResponse } from './irlDisplay.js';
+import { NoDocumentTag, ResponseMeta } from './ResponseParts.jsx';
+
+const itemHref = (id) => `/company/items/${id}`;
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -89,6 +92,7 @@ export default function StagedSubmissionPage() {
           {receipt.files.map((f) => (
             <div key={f.id} style={{ marginBottom: 8 }}>
               <Text strong>{f.filename}</Text>
+              {isResponse(f) && <> <NoDocumentTag /></>}
               <br />
               <Text type="secondary">{f.description}</Text>
             </div>
@@ -107,7 +111,18 @@ export default function StagedSubmissionPage() {
         ? <Text style={{ fontFamily: 'monospace' }}>{ref}</Text>
         : <Tag>Additional document</Tag>),
     },
-    { title: 'File', dataIndex: 'filename' },
+    {
+      title: 'File',
+      dataIndex: 'filename',
+      // A "cannot provide" response shows its label, the tag and its reason in
+      // place of a file (HANDOVER-CW026 §3.1).
+      render: (filename, row) => (isResponse(row) ? (
+        <Space direction="vertical" size={2}>
+          <Space size={6} wrap><Text>{filename}</Text><NoDocumentTag /></Space>
+          <ResponseMeta file={row} itemHref={itemHref} />
+        </Space>
+      ) : filename),
+    },
     { title: 'Description', dataIndex: 'description' },
     { title: 'Size', dataIndex: 'sizeBytes', width: 100, render: formatBytes },
     {
@@ -123,8 +138,8 @@ export default function StagedSubmissionPage() {
       <div>
         <Title level={3} style={{ marginBottom: 0 }}>Ready to submit</Title>
         <Paragraph type="secondary">
-          These documents have been uploaded but have not been sent to Taranis. Nothing here is
-          visible to the deal team until it is formally submitted.
+          These documents and responses have been added but have not been sent to Taranis.
+          Nothing here is visible to the deal team until it is formally submitted.
         </Paragraph>
       </div>
 
@@ -186,9 +201,12 @@ export default function StagedSubmissionPage() {
                   ? <Text style={{ fontFamily: 'monospace' }}>{f.itemRef}</Text>
                   : <Tag>Additional document</Tag>}
                 <Text strong>{f.filename}</Text>
-                <Text type="secondary">{formatBytes(f.sizeBytes)}</Text>
+                {isResponse(f)
+                  ? <NoDocumentTag />
+                  : <Text type="secondary">{formatBytes(f.sizeBytes)}</Text>}
               </Space>
               <Text type="secondary">{f.description}</Text>
+              <ResponseMeta file={f} />
             </Space>
           </Card>
         ))}

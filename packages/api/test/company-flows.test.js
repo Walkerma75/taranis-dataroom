@@ -225,7 +225,7 @@ test('submitting a replacement retires the submitted version it supersedes', asy
       id: 'item-1', state: 'attention_needed', baseline_state: 'outstanding',
     }]],
     // What the item derives from once the old version has been retired.
-    ['SELECT upload_state, status, deleted_at FROM company_files', [
+    ['SELECT upload_state, status, deleted_at', [
       { upload_state: 'submitted', status: 'superseded', deleted_at: null },
       { upload_state: 'submitted', status: 'received', deleted_at: null },
     ]],
@@ -378,7 +378,7 @@ test('a reviewer can retire a version by hand, and without a note', async (t) =>
     ['SELECT id, state, baseline_state', [{
       id: 'item-1', state: 'attention_needed', baseline_state: 'partially_held',
     }]],
-    ['SELECT upload_state, status, deleted_at FROM company_files', [
+    ['SELECT upload_state, status, deleted_at', [
       { upload_state: 'submitted', status: 'superseded', deleted_at: null },
       { upload_state: 'submitted', status: 'completed', deleted_at: null },
     ]],
@@ -515,7 +515,7 @@ test('a status change writes history and recomputes the item state', async (t) =
     ['SELECT id, state, baseline_state', [{
       id: 'item-1', state: 'received', baseline_state: 'outstanding',
     }]],
-    ['SELECT upload_state, status, deleted_at FROM company_files', [
+    ['SELECT upload_state, status, deleted_at', [
       { upload_state: 'submitted', status: 'attention_needed', deleted_at: null },
     ]],
   ]);
@@ -551,7 +551,7 @@ test('with digests switched off, attention_needed emails the uploader and the co
     ['SELECT id, state, baseline_state', [{
       id: 'item-1', state: 'received', baseline_state: 'outstanding',
     }]],
-    ['SELECT upload_state, status, deleted_at FROM company_files', [
+    ['SELECT upload_state, status, deleted_at', [
       { upload_state: 'submitted', status: 'attention_needed', deleted_at: null },
     ]],
     // Deliberately selected by name: an internal note must never be in reach of
@@ -614,7 +614,7 @@ function statusChangePool(finalStatus) {
     ['SELECT id, state, baseline_state', [{
       id: 'item-1', state: 'received', baseline_state: 'outstanding',
     }]],
-    ['SELECT upload_state, status, deleted_at FROM company_files', [
+    ['SELECT upload_state, status, deleted_at', [
       { upload_state: 'submitted', status: finalStatus, deleted_at: null },
     ]],
     ['FROM company_users cu\n       JOIN users u', [
@@ -782,7 +782,7 @@ test('a status change that is neither attention_needed nor completed emails nobo
     ['SELECT id, state, baseline_state', [{
       id: 'item-1', state: 'received', baseline_state: 'outstanding',
     }]],
-    ['SELECT upload_state, status, deleted_at FROM company_files', [
+    ['SELECT upload_state, status, deleted_at', [
       { upload_state: 'submitted', status: 'in_review', deleted_at: null },
     ]],
   ]);

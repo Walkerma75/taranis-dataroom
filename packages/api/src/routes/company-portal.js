@@ -53,6 +53,13 @@ import {
   queueDigestEvent,
   sessionDigestsEnabled,
 } from '../services/notification-digests.js';
+import {
+  statementLabel,
+  statementFields,
+  validateStatementInput,
+  isStatement,
+  expectedByFrom,
+} from '../services/company-statements.js';
 
 /**
  * How a proposed company role reads in the nomination email. The stored values
@@ -174,14 +181,20 @@ const upload = multer({
 const router = Router();
 router.use(requireAuth, requireCompany());
 
-/** Shape a file row for a company-facing response. */
+/**
+ * Shape a file row for a company-facing response.
+ *
+ * A "cannot provide" response (HANDOVER-CW026) comes through here too: its
+ * `filename` is its display label, `kind` says what it is, and `sizeBytes` is
+ * null rather than 0 so no client mistakes an empty file for no file.
+ */
 function companyFileView(f) {
   return {
     id: f.id,
     irlItemId: f.irl_item_id,
     filename: f.filename,
     description: f.description,
-    sizeBytes: Number(f.size_bytes),
+    ...statementFields(f),
     contentType: f.content_type,
     version: f.version,
     supersedes: f.supersedes,
@@ -269,10 +282,13 @@ router.get('/items/:itemId', async (req, res) => {
     const { rows: files } = await pool.query(
       `SELECT f.*, u.display_name AS uploaded_by_name,
               b.receipt_ref, b.submitted_at,
-              h.note AS status_note, h.created_at AS status_set_at
+              h.note AS status_note, h.created_at AS status_set_at,
+              ri.ref AS related_item_ref
        FROM company_files f
        JOIN users u ON u.id = f.uploaded_by
        LEFT JOIN submission_batches b ON b.id = f.batch_id
+       -- The item a 'provided_elsewhere' response points at, for its link.
+       LEFT JOIN company_irl_items ri ON ri.id = f.related_item_id AND ri.company_id = f.company_id
        -- The most recent status entry for this file. LATERAL rather than a
        -- correlated subquery so the note and its timestamp come from the same
        -- row: two subqueries could disagree if a status changed mid-query.
@@ -296,6 +312,9 @@ router.get('/items/:itemId', async (req, res) => {
         note_for_company: item.note_for_company,
         internal_note: item.internal_note,   // stripped by companySafeItem
       }),
+      // "Expected by the company: 30 October 2026", from an accepted or pending
+      // not-yet-available response (CW026 §3.7 item 4).
+      expectedBy: expectedByFrom(files),
       files: files.map(companyFileView),
     });
   } catch (err) {
@@ -471,6 +490,17 @@ router.post(
         });
       }
 
+      // A response that has not been submitted is not on the record yet, so
+      // there is nothing to supersede: it is removed, and the document added in
+      // the ordinary way. Replacing a SUBMITTED response with the document is
+      // the normal path when a not-yet-available item arrives (CW026 §3.2).
+      if (isStatement(previous) && previous.upload_state === 'staged') {
+        cleanupCompanyStaging(req.file.destination);
+        return res.status(409).json({
+          error: 'This response has not been submitted yet. Remove it and add the document instead.',
+        });
+      }
+
       const fileId = crypto.randomUUID();
       const storage = await getStorage();
       const scanner = getScanner();
@@ -549,6 +579,286 @@ router.post(
 );
 
 // ---------------------------------------------------------------------------
+// "Cannot provide" responses (HANDOVER-CW026)
+//
+// A response is a `company_files` row with kind 'statement' (migration 022): a
+// reason and an explanation, and no bytes. It is staged, submitted by the
+// Company Administrator under a receipt, reviewed and superseded exactly as a
+// file is, so from here on every existing path handles it. Only creating and
+// editing one are its own.
+//
+// ONE CURRENT RESPONSE PER ITEM. Enforced under a lock on the item row, so two
+// people pressing the button at once cannot both succeed, and backed for the
+// staged half by migration 022's partial unique index. The one exception is a
+// replacement, which is staged beside the submitted response it replaces and
+// retires it at submission, not before (the CW010 rule).
+// ---------------------------------------------------------------------------
+
+/** Postgres unique_violation, which the staged-response index raises. */
+const UNIQUE_VIOLATION = '23505';
+
+/**
+ * Check a 'provided_elsewhere' target: another of this company's own items,
+ * visible to it, and not the item being answered. Returns its ref, or an error.
+ */
+async function relatedItemCheck(db, { relatedItemId, itemId, companyId }) {
+  if (relatedItemId === itemId) {
+    return { error: 'Choose a different item from this one.' };
+  }
+  const { rows: [related] } = await db.query(
+    `SELECT id, ref, state FROM company_irl_items WHERE id = $1 AND company_id = $2`,
+    [relatedItemId, companyId]
+  );
+  // Same answer for another company's item and a hidden one: neither is
+  // something this company can point at.
+  if (!related || related.state === 'held') {
+    return { error: 'Choose one of the items on your own information request list.' };
+  }
+  return { ref: related.ref };
+}
+
+router.post(
+  '/statements',
+  requireCompanyRole('company_admin', 'company_contributor'),
+  async (req, res) => {
+    const checked = validateStatementInput(req.body);
+    if (checked.error) return res.status(400).json({ error: checked.error });
+    const { reason, explanation, expectedDate, relatedItemId } = checked.value;
+    const replacesFileId = req.body?.replacesFileId ? String(req.body.replacesFileId) : null;
+
+    const client = await pool.connect();
+    const refuse = async (status, error) => {
+      await client.query('ROLLBACK');
+      return res.status(status).json({ error });
+    };
+
+    try {
+      await client.query('BEGIN');
+
+      // What it replaces, if anything, decides which item it answers. A staged
+      // FILE was never sent, so there is nothing to supersede: it is removed
+      // in this transaction and the response takes its place.
+      let previous = null;
+      let removedStaged = null;
+      let irlItemId = req.body?.irlItemId ? String(req.body.irlItemId) : null;
+      if (replacesFileId) {
+        const { rows: [row] } = await client.query(
+          `SELECT id, irl_item_id, version, status, upload_state, kind
+             FROM company_files
+            WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`,
+          [replacesFileId, req.company.id]
+        );
+        if (!row) return refuse(404, 'File not found');
+        if (row.status === 'superseded') {
+          return refuse(409, 'This version has already been replaced. Replace the newer version of it instead.');
+        }
+        if (!row.irl_item_id) {
+          return refuse(400, 'A response can only be given against a checklist item, not an additional document.');
+        }
+        if (row.kind === 'statement' && row.upload_state === 'staged') {
+          return refuse(409, 'This response has not been submitted yet. Edit it instead.');
+        }
+        if (row.upload_state === 'staged') removedStaged = row;
+        else previous = row;
+        irlItemId = row.irl_item_id;
+      }
+      if (!irlItemId) return refuse(400, 'Choose the checklist item this response is for.');
+
+      // The item, locked for the rest of the transaction.
+      const { rows: [item] } = await client.query(
+        `SELECT id, ref, description, state FROM company_irl_items
+          WHERE id = $1 AND company_id = $2
+          FOR UPDATE`,
+        [irlItemId, req.company.id]
+      );
+      if (!item || item.state === 'held') return refuse(404, 'Item not found');
+
+      let relatedItemRef = null;
+      if (reason === 'provided_elsewhere') {
+        const related = await relatedItemCheck(client, {
+          relatedItemId, itemId: item.id, companyId: req.company.id,
+        });
+        if (related.error) return refuse(400, related.error);
+        relatedItemRef = related.ref;
+      }
+
+      const { rows: current } = await client.query(
+        `SELECT id, upload_state FROM company_files
+          WHERE irl_item_id = $1 AND company_id = $2 AND kind = 'statement'
+            AND deleted_at IS NULL AND (status IS NULL OR status <> 'superseded')`,
+        [item.id, req.company.id]
+      );
+      const others = current.filter((s) => s.id !== previous?.id);
+      if (others.some((s) => s.upload_state === 'staged')) {
+        return refuse(409, 'This item already has a response waiting to be submitted. Edit or remove that one instead.');
+      }
+      if (others.length) {
+        return refuse(409, 'This item already has a response on record. Use Replace this response on it instead.');
+      }
+
+      if (removedStaged) {
+        await client.query(
+          `UPDATE company_files SET deleted_at = NOW()
+            WHERE id = $1 AND company_id = $2 AND upload_state = 'staged' AND deleted_at IS NULL`,
+          [removedStaged.id, req.company.id]
+        );
+      }
+
+      const label = statementLabel({ reason, expectedDate, relatedItemRef });
+      const { rows: [row] } = await client.query(
+        `INSERT INTO company_files
+           (company_id, irl_item_id, uploaded_by, filename, description, kind,
+            statement_reason, expected_date, related_item_id,
+            s3_key, size_bytes, content_type, scan_state,
+            version, supersedes, upload_state)
+         VALUES ($1, $2, $3, $4, $5, 'statement', $6, $7, $8,
+                 NULL, NULL, NULL, NULL, $9, $10, 'staged')
+         RETURNING *`,
+        [
+          req.company.id, item.id, req.user.sub, label, explanation,
+          reason, expectedDate, relatedItemId,
+          previous ? previous.version + 1 : 1, previous?.id || null,
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      if (removedStaged) {
+        await logAudit({
+          action: 'company_file.deleted_staged',
+          userId: req.user.sub,
+          resource: 'company_file',
+          resourceId: removedStaged.id,
+          detail: { companyId: req.company.id, kind: 'file', replacedByStatement: row.id },
+          ip: req.ip,
+        });
+      }
+
+      // Distinguishable from an upload in the audit trail by its action name.
+      await logAudit({
+        action: 'company_statement.recorded',
+        userId: req.user.sub,
+        resource: 'company_file',
+        resourceId: row.id,
+        detail: {
+          companyId: req.company.id,
+          irlItemId: item.id,
+          kind: 'statement',
+          reason,
+          supersedes: previous?.id || null,
+          version: row.version,
+        },
+        ip: req.ip,
+      });
+
+      if (previous) await recomputeItemState(item.id);
+
+      // An upload as far as the review side is concerned: something new has
+      // arrived against an item. No size, because there is no file (CW026 §3.5).
+      await queueUploadNotification(req, {
+        fileId: row.id,
+        files: [{
+          filename: label,
+          size: '',
+          item_ref: item.ref,
+          item_description_short: shortDescription(item.description),
+          description: previous ? `${explanation} (version ${row.version})` : explanation,
+        }],
+        itemRef: item.ref,
+      });
+
+      res.status(201).json(companyFileView({
+        ...row, related_item_ref: relatedItemRef, uploaded_by_name: req.user.name,
+      }));
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      if (err.code === UNIQUE_VIOLATION) {
+        return res.status(409).json({
+          error: 'This item already has a response waiting to be submitted. Edit or remove that one instead.',
+        });
+      }
+      console.error('[company] Statement error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// PATCH /company/statements/:fileId — change a STAGED response. The same
+// validation as recording one, and the label is rewritten with it, which is the
+// only way it ever changes (migration 022).
+router.patch(
+  '/statements/:fileId',
+  requireCompanyRole('company_admin', 'company_contributor'),
+  async (req, res) => {
+    const checked = validateStatementInput(req.body);
+    if (checked.error) return res.status(400).json({ error: checked.error });
+    const { reason, explanation, expectedDate, relatedItemId } = checked.value;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rows: [existing] } = await client.query(
+        `SELECT id, irl_item_id FROM company_files
+          WHERE id = $1 AND company_id = $2 AND kind = 'statement'
+            AND upload_state = 'staged' AND deleted_at IS NULL
+          FOR UPDATE`,
+        [req.params.fileId, req.company.id]
+      );
+      if (!existing) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({
+          error: 'Response not found, or it has already been submitted and can no longer be edited',
+        });
+      }
+
+      let relatedItemRef = null;
+      if (reason === 'provided_elsewhere') {
+        const related = await relatedItemCheck(client, {
+          relatedItemId, itemId: existing.irl_item_id, companyId: req.company.id,
+        });
+        if (related.error) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: related.error });
+        }
+        relatedItemRef = related.ref;
+      }
+
+      const label = statementLabel({ reason, expectedDate, relatedItemRef });
+      const { rows: [row] } = await client.query(
+        `UPDATE company_files
+            SET statement_reason = $3, expected_date = $4, related_item_id = $5,
+                description = $6, filename = $7
+          WHERE id = $1 AND company_id = $2
+          RETURNING *`,
+        [existing.id, req.company.id, reason, expectedDate, relatedItemId, explanation, label]
+      );
+
+      await client.query('COMMIT');
+
+      await logAudit({
+        action: 'company_statement.edited',
+        userId: req.user.sub,
+        resource: 'company_file',
+        resourceId: row.id,
+        detail: { companyId: req.company.id, kind: 'statement', reason },
+        ip: req.ip,
+      });
+
+      res.json(companyFileView({ ...row, related_item_ref: relatedItemRef }));
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error('[company] Edit statement error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
 // PATCH /company/files/:fileId — edit the description, STAGED only
 // ---------------------------------------------------------------------------
 router.patch(
@@ -561,14 +871,25 @@ router.patch(
     }
 
     try {
+      // Files only. A response's description is its formal explanation, with a
+      // minimum length and a label rewritten beside it, so it is edited through
+      // PATCH /company/statements/:fileId and nowhere else.
       const { rows: [row] } = await pool.query(
         `UPDATE company_files SET description = $3
          WHERE id = $1 AND company_id = $2
            AND upload_state = 'staged' AND deleted_at IS NULL
+           AND kind = 'file'
          RETURNING *`,
         [req.params.fileId, req.company.id, description.trim()]
       );
       if (!row) {
+        const { rows: [other] } = await pool.query(
+          `SELECT kind FROM company_files WHERE id = $1 AND company_id = $2`,
+          [req.params.fileId, req.company.id]
+        );
+        if (isStatement(other)) {
+          return res.status(409).json({ error: 'A response is edited with the response form, not here.' });
+        }
         return res.status(404).json({
           error: 'File not found, or it has already been submitted and can no longer be edited',
         });
@@ -619,7 +940,7 @@ router.delete(
         userId: req.user.sub,
         resource: 'company_file',
         resourceId: row.id,
-        detail: { companyId: req.company.id, filename: row.filename },
+        detail: { companyId: req.company.id, filename: row.filename, kind: row.kind || 'file' },
         ip: req.ip,
       });
 
@@ -638,10 +959,12 @@ router.get('/staged', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT f.*, u.display_name AS uploaded_by_name,
-              i.ref AS item_ref, i.section AS item_section, i.description AS item_description
+              i.ref AS item_ref, i.section AS item_section, i.description AS item_description,
+              ri.ref AS related_item_ref
        FROM company_files f
        JOIN users u ON u.id = f.uploaded_by
        LEFT JOIN company_irl_items i ON i.id = f.irl_item_id
+       LEFT JOIN company_irl_items ri ON ri.id = f.related_item_id AND ri.company_id = f.company_id
        WHERE f.company_id = $1 AND f.upload_state = 'staged' AND f.deleted_at IS NULL
        ORDER BY i.sort_order NULLS LAST, f.created_at`,
       [req.company.id]
@@ -864,7 +1187,9 @@ router.post('/submit', requireCompanyRole('company_admin'), async (req, res) => 
         companyId: req.company.id,
         receiptRef,
         fileCount: files.length,
-        files: files.map((f) => ({ filename: f.filename, description: f.description })),
+        files: files.map((f) => ({
+          filename: f.filename, description: f.description, kind: f.kind || 'file',
+        })),
       },
       ip: req.ip,
     });
@@ -880,6 +1205,7 @@ router.post('/submit', requireCompanyRole('company_admin'), async (req, res) => 
         id: f.id,
         filename: f.filename,
         description: f.description,
+        kind: f.kind || 'file',
       })),
     });
   } catch (err) {
@@ -935,9 +1261,12 @@ router.get('/receipts/:id', async (req, res) => {
 
     const { rows: files } = await pool.query(
       `SELECT f.id, f.filename, f.description, f.size_bytes, f.created_at,
-              i.ref AS item_ref, i.section AS item_section
+              f.kind, f.statement_reason, f.expected_date, f.related_item_id,
+              i.ref AS item_ref, i.section AS item_section,
+              ri.ref AS related_item_ref
        FROM company_files f
        LEFT JOIN company_irl_items i ON i.id = f.irl_item_id
+       LEFT JOIN company_irl_items ri ON ri.id = f.related_item_id AND ri.company_id = f.company_id
        WHERE f.batch_id = $1
        ORDER BY i.sort_order NULLS LAST, f.filename`,
       [batch.id]
@@ -956,7 +1285,7 @@ router.get('/receipts/:id', async (req, res) => {
         id: f.id,
         filename: f.filename,
         description: f.description,
-        sizeBytes: Number(f.size_bytes),
+        ...statementFields(f),
         uploadedAt: f.created_at,
         itemRef: f.item_ref,
         itemSection: f.item_section,
