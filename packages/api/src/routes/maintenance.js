@@ -23,6 +23,7 @@ import { Router } from 'express';
 import { requireAuth, requireRole, rejectCompanyRole } from '../middleware/auth.js';
 import { logAudit } from '../services/audit.js';
 import { emailStatusFor, release } from '../services/notifications.js';
+import { pendingDigestsFor } from '../services/notification-digests.js';
 import { getSesSuppression } from '../services/email.js';
 import {
   runReset, resetEnabled, ResetError, CONFIRM_PHRASE, ENABLE_FLAG,
@@ -113,6 +114,10 @@ router.get('/reset-platform', requireResetEnabled, (_req, res) => {
  * existed the answer required psql against an instance in a private subnet.
  * A suppressed send is recorded and then shown to nobody, so an administrator
  * resending an invitation is told it worked either way (HANDOVER-CW015 §3.4).
+ *
+ * `pendingDigests` lists session digests still open for the address
+ * (HANDOVER-CW025). While a sitting's quiet period runs there is nothing in the
+ * outbox yet, and without this the endpoint would say nothing was ever sent.
  */
 router.get('/email-status', async (req, res) => {
   const email = String(req.query.email || '').trim().toLowerCase();
@@ -120,6 +125,7 @@ router.get('/email-status', async (req, res) => {
 
   try {
     const status = await emailStatusFor(email);
+    const pendingDigests = await pendingDigestsFor(email);
     const sesSuppression = await getSesSuppression(email);
 
     await logAudit({
@@ -129,7 +135,7 @@ router.get('/email-status', async (req, res) => {
       ip: req.ip,
     });
 
-    res.json({ ...status, sesSuppression });
+    res.json({ ...status, pendingDigests, sesSuppression });
   } catch (err) {
     console.error('[maintenance] Email status failed:', err);
     res.status(500).json({ error: 'Internal server error' });

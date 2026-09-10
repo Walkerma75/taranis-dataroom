@@ -108,6 +108,25 @@ test('an admin can retrieve outbox and suppression state for any address', async
   });
 });
 
+test('a session digest still in its quiet period is reported, not mistaken for nothing sent', async () => {
+  // HANDOVER-CW025: during the quiet period the outbox has nothing for the
+  // address yet. Without this the endpoint would read as "never sent".
+  const pool = diagnosticsPool([
+    ['FROM notification_digest_events', [{
+      family: 'company-status', company_id: 'c-1', event_count: 76,
+      first_event_at: '2026-09-10T10:01:00.000Z', last_event_at: '2026-09-10T10:09:00.000Z',
+    }]],
+  ]);
+  await withServer(pool, async ({ request }) => {
+    const res = await request(`/maintenance/email-status?email=${encodeURIComponent(ADDRESS)}`, {
+      token: tokenFor({ sub: 'admin-1', role: 'admin' }),
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.pendingDigests.length, 1);
+    assert.equal(res.body.pendingDigests[0].event_count, 76);
+  });
+});
+
 test('email-status refuses to guess when no address is given', async () => {
   await withServer(diagnosticsPool(), async ({ request }) => {
     const res = await request('/maintenance/email-status', {

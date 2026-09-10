@@ -33,6 +33,21 @@ const MOUNTS = [
 const companyAdminToken = () => tokenFor({ role: 'company', companyId: COMPANY_A });
 const adminToken = () => tokenFor({ role: 'admin', sub: 'admin-1' });
 
+/**
+ * Set NOTIFY_DIGEST_ENABLED for one test and put it back afterwards. Unset,
+ * session digests are ON (HANDOVER-CW025, Mark's decision of 10 September
+ * 2026); 'false' is the kill switch back to one message per event.
+ */
+function digestSwitch(t, value) {
+  const before = process.env.NOTIFY_DIGEST_ENABLED;
+  if (value === undefined) delete process.env.NOTIFY_DIGEST_ENABLED;
+  else process.env.NOTIFY_DIGEST_ENABLED = value;
+  t.after(() => {
+    if (before === undefined) delete process.env.NOTIFY_DIGEST_ENABLED;
+    else process.env.NOTIFY_DIGEST_ENABLED = before;
+  });
+}
+
 function stagedFile(id, itemId = null) {
   return {
     id,
@@ -524,7 +539,9 @@ test('a status change writes history and recomputes the item state', async (t) =
   assert.equal(update.params[1], 'attention_needed');
 });
 
-test('attention_needed emails the uploader and the company admin, and carries the note', async (t) => {
+test('with digests switched off, attention_needed emails the uploader and the company admin at once, with the note', async (t) => {
+  // The kill switch must put back exactly the behaviour from before CW025.
+  digestSwitch(t, 'false');
   const pool = fakePool([
     ['FROM company_files f\n     JOIN companies c', [{
       id: FILE_1, company_id: COMPANY_A, irl_item_id: 'item-1', uploaded_by: 'user-7',
@@ -579,6 +596,179 @@ test('attention_needed emails the uploader and the company admin, and carries th
   assert.equal(first.receipt_ref, 'TRN-DD-2026-000042');
   assert.ok(first.item_url.endsWith('/company/items/item-1'));
   assert.equal(first.internal_note, undefined);
+  assert.equal(pool.sql().some((s) => s.includes('notification_digest_events')), false);
+});
+
+// ---------------------------------------------------------------------------
+// Session digests (HANDOVER-CW025): the default
+// ---------------------------------------------------------------------------
+
+/** The world of one submitted file whose status is about to change. */
+function statusChangePool(finalStatus) {
+  return fakePool([
+    ['FROM company_files f\n     JOIN companies c', [{
+      id: FILE_1, company_id: COMPANY_A, irl_item_id: 'item-1', uploaded_by: 'user-7',
+      batch_id: 'batch-1', filename: 'accounts-2024.pdf',
+      upload_state: 'submitted', status: 'received', legal_name: 'Example Bio',
+    }]],
+    ['SELECT id, state, baseline_state', [{
+      id: 'item-1', state: 'received', baseline_state: 'outstanding',
+    }]],
+    ['SELECT upload_state, status, deleted_at FROM company_files', [
+      { upload_state: 'submitted', status: finalStatus, deleted_at: null },
+    ]],
+    ['FROM company_users cu\n       JOIN users u', [
+      { email: 'Uploader@ExampleBio.com', display_name: 'Sam Patel' },
+      { email: 'admin@examplebio.com', display_name: 'Alex Fenn' },
+    ]],
+    ['INSERT INTO notification_digest_events', () => [{ id: `e-${Math.random()}` }]],
+  ]);
+}
+
+for (const [status, note] of [
+  ['attention_needed', 'This is the 2024 file, we need 2025.'],
+  ['completed', undefined],
+]) {
+  test(`by default ${status} records a digest event per recipient inside the transaction, and sends nothing yet`, async (t) => {
+    digestSwitch(t, undefined);
+    const pool = statusChangePool(status);
+    const server = await startTestServer(MOUNTS, pool);
+    t.after(() => server.close());
+
+    const res = await server.request(`/company-files/${FILE_1}/status`, {
+      method: 'PATCH', token: adminToken(), body: { status, ...(note ? { note } : {}) },
+    });
+    assert.equal(res.status, 200);
+
+    const events = pool.calls.filter((c) => c.text.includes('INSERT INTO notification_digest_events'));
+    assert.equal(events.length, 2, 'one event for the uploader, one for the company admin');
+    assert.deepEqual(events.map((e) => e.params[0]), ['company-status', 'company-status']);
+    // Lower-cased, so one person is one digest however the address was typed.
+    assert.deepEqual(events.map((e) => e.params[1]), ['uploader@examplebio.com', 'admin@examplebio.com']);
+    assert.equal(events[0].params[2], COMPANY_A);
+    // Ids only: the message is built from the file as it stands when the
+    // sitting ends, so neither the note nor the status is stored here.
+    assert.deepEqual(JSON.parse(events[0].params[3]), { fileId: FILE_1 });
+
+    // Written with the change, not after it.
+    const order = pool.sql();
+    const commitAt = order.indexOf('COMMIT');
+    const lastEventAt = order.map((s, i) => (s.includes('notification_digest_events') ? i : -1))
+      .filter((i) => i >= 0).pop();
+    assert.ok(lastEventAt < commitAt, 'a digest event was written outside the status transaction');
+
+    // Nothing reaches the outbox until the sitting closes.
+    assert.equal(pool.sql().some((s) => s.includes('notification_outbox')), false);
+  });
+}
+
+test('by default a status that does not notify records no digest event either', async (t) => {
+  digestSwitch(t, undefined);
+  const pool = statusChangePool('in_review');
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company-files/${FILE_1}/status`, {
+    method: 'PATCH', token: adminToken(), body: { status: 'in_review' },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(pool.sql().some((s) => s.includes('notification_digest_events')), false);
+  assert.equal(pool.sql().some((s) => s.includes('notification_outbox')), false);
+});
+
+/** Upload one file against item 3.2 and return the pool that saw it. */
+async function uploadOne(t) {
+  const { setStorage, resetStorage, MemoryStorage } = await import('../src/services/storage.js');
+  const { setScanner, resetScanner, StubScanner } = await import('../src/services/scanner.js');
+  setStorage(new MemoryStorage());
+  setScanner(new StubScanner({ warnOnUse: false }));
+  t.after(() => { resetStorage(); resetScanner(); });
+
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['SELECT id, state, ref, description FROM company_irl_items', [
+      { id: 'item-1', state: 'outstanding', ref: '3.2', description: 'Audited accounts' },
+    ]],
+    ['INSERT INTO company_files', (params) => [{
+      id: params[0], company_id: COMPANY_A, irl_item_id: 'item-1', filename: 'accounts.pdf',
+      description: 'FY2025', size_bytes: 13, content_type: 'application/pdf', version: 1,
+      upload_state: 'staged', status: null, created_at: new Date(),
+    }]],
+    ['INSERT INTO notification_digest_events', [{ id: 'e-1' }]],
+    ['INSERT INTO notification_outbox', [{ id: 'n-1' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const form = new FormData();
+  form.append('irlItemId', 'item-1');
+  form.append('description', 'FY2025');
+  form.append('file', new Blob(['%PDF-1.4 test'], { type: 'application/pdf' }), 'accounts.pdf');
+
+  const res = await fetch(`${server.base}/company/files`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${companyAdminToken()}` },
+    body: form,
+  });
+  return { pool, status: res.status, body: await res.json() };
+}
+
+test('by default an upload records an admin-uploads digest event for that file, and sends nothing yet', async (t) => {
+  digestSwitch(t, undefined);
+  const { pool, status, body } = await uploadOne(t);
+  assert.equal(status, 201);
+
+  const event = pool.calls.find((c) => c.text.includes('INSERT INTO notification_digest_events'));
+  assert.ok(event, 'no digest event was recorded for the upload');
+  assert.equal(event.params[0], 'admin-uploads');
+  assert.equal(event.params[1], 'admin@taraniscapital.com');
+  assert.equal(event.params[2], COMPANY_A);
+  assert.deepEqual(JSON.parse(event.params[3]), { fileId: body.id });
+  assert.equal(pool.sql().some((s) => s.includes('notification_outbox')), false);
+});
+
+test('with digests switched off an upload is announced at once, as before', async (t) => {
+  digestSwitch(t, 'false');
+  const { pool, status } = await uploadOne(t);
+  assert.equal(status, 201);
+
+  const queued = pool.calls.find((c) => c.text.includes('INSERT INTO notification_outbox'));
+  assert.ok(queued, 'the upload notification was not queued');
+  assert.equal(queued.params[0], 'upload-notification');
+  assert.equal(pool.sql().some((s) => s.includes('notification_digest_events')), false);
+});
+
+test('by default an added checklist item records a digest event for each company user', async (t) => {
+  digestSwitch(t, undefined);
+  const pool = fakePool([
+    ['COALESCE(MAX(sort_order), 0)', [{ n: 146 }]],
+    ['INSERT INTO company_irl_items', [{
+      id: 'item-new', ref: '15.1', description: 'Board minutes', priority: 'high',
+      note_for_company: null, internal_note: 'Chase counsel',
+    }]],
+    ['JOIN companies c ON c.id = cu.company_id', [
+      { legal_name: 'Example Bio', email: 'alex@examplebio.com', display_name: 'Alex Fenn' },
+      { legal_name: 'Example Bio', email: 'sam@examplebio.com', display_name: 'Sam Patel' },
+    ]],
+    ['INSERT INTO notification_digest_events', () => [{ id: `e-${Math.random()}` }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/irl-items`, {
+    method: 'POST',
+    token: adminToken(),
+    body: { section: 'Governance', ref: '15.1', description: 'Board minutes', priority: 'high' },
+  });
+  assert.equal(res.status, 201);
+
+  const events = pool.calls.filter((c) => c.text.includes('INSERT INTO notification_digest_events'));
+  assert.equal(events.length, 2);
+  assert.deepEqual(events.map((e) => e.params[0]), ['company-new-items', 'company-new-items']);
+  assert.deepEqual(JSON.parse(events[0].params[3]), { itemId: 'item-new' });
+  // Nothing about the item's content, internal note least of all, is stored.
+  assert.equal(events.some((e) => String(e.params[3]).includes('Chase counsel')), false);
+  assert.equal(pool.sql().some((s) => s.includes('notification_outbox')), false);
 });
 
 test('a status change that is neither attention_needed nor completed emails nobody', async (t) => {

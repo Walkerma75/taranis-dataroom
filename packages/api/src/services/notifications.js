@@ -66,8 +66,8 @@ export function backoffMinutes(attempts) {
   return Math.min(2 ** Math.max(0, attempts - 1), 30);
 }
 
-/** Addresses are compared case-insensitively. See migration 018. */
-const normaliseEmail = (email) => String(email || '').trim().toLowerCase();
+/** Addresses are compared case-insensitively. See migrations 018 and 021. */
+export const normaliseEmail = (email) => String(email || '').trim().toLowerCase();
 
 // ---------------------------------------------------------------------------
 // Payload helpers

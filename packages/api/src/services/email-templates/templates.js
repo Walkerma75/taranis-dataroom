@@ -1,5 +1,5 @@
 /**
- * The eleven approved templates.
+ * The thirteen approved templates.
  *
  * ---------------------------------------------------------------------------
  * DO NOT EDIT THE WORDING IN THIS FILE
@@ -32,6 +32,12 @@
  * the note at its own entry records the difference so nobody reads it as a
  * precedent. Its caller is additionally gated by `DD_DIGEST_ENABLED`, which is
  * an operational switch for where the digest sends, not a review gate.
+ *
+ * TWELVE AND THIRTEEN CAME THE SAME WAY AS ELEVEN. `status-digest` and
+ * `upload-digest` are the session digests of HANDOVER-CW025, drafted on the
+ * code side as `dd-digest` was, set out in HANDOVER-C025 §6 and approved by Mark
+ * on 10 September 2026 as drafted, before the merge because digests are on from
+ * deploy. They are frozen now on the same terms as the rest.
  */
 import { renderHtml, renderText } from './layout.js';
 
@@ -43,6 +49,61 @@ function fileLines(files, { withSize }) {
     const description = f.description ? `, description: "${f.description}"` : '';
     return `${f.filename}${size}, ${item}${description}`;
   });
+}
+
+/**
+ * '3.2, Audited accounts' for the digests. A file sent as additional material
+ * has no checklist item, and says so rather than printing an empty ', '.
+ */
+function itemLabel(f) {
+  if (!f.item_ref) return 'additional material';
+  return [f.item_ref, f.item_description_short].filter(Boolean).join(', ');
+}
+
+/**
+ * The accepted files in a status digest, as blocks.
+ *
+ * Tight lines, broken only where a reviewer left a note on an acceptance, so
+ * the note sits directly under the file it is about.
+ */
+function acceptedBlocks(files) {
+  const blocks = [];
+  let run = [];
+  for (const f of files || []) {
+    run.push(`${itemLabel(f)}: ${f.filename}`);
+    if (f.reviewer_note) {
+      blocks.push({ lines: run }, { quote: f.reviewer_note });
+      run = [];
+    }
+  }
+  if (run.length) blocks.push({ lines: run });
+  return blocks;
+}
+
+/** 'Staged, not yet submitted.' and so on, for one line of the upload digest. */
+function uploadStateSentence(f) {
+  if (f.state === 'submitted') return `Submitted under receipt ${f.receipt_ref}.`;
+  if (f.state === 'removed') return 'Removed by the company before submission.';
+  return 'Staged, not yet submitted.';
+}
+
+/** The closing line of the upload digest, by what the list contains. */
+function uploadClosing(p) {
+  const submitted = Number(p.submitted_count) || 0;
+  const staged = Number(p.staged_count) || 0;
+  if (submitted > 0 && submitted === Number(p.file_count)) {
+    return 'All of these have since been formally submitted and are in the review queue.';
+  }
+  const parts = [];
+  if (submitted > 0) {
+    parts.push(`${submitted} file(s) have since been formally submitted and are in the review queue.`);
+  }
+  if (staged > 0) {
+    parts.push(submitted > 0
+      ? `${staged} file(s) are still staged and not yet submitted; you will receive a submission notice when the company confirms a batch.`
+      : 'None of these has been formally submitted yet. You will receive a submission notice when the company confirms a batch.');
+  }
+  return parts.length ? parts.join(' ') : null;
 }
 
 /**
@@ -248,6 +309,93 @@ export const TEMPLATES = {
       },
       { button: { label: 'Open the dashboard', url: p.dashboard_url } },
     ],
+  },
+
+  // 12 ------------------------------------------------------------------
+  // APPROVED BY MARK, 10 SEPTEMBER 2026, as drafted in HANDOVER-C025 §6.1.
+  // Frozen: a change comes back through Cowork like any other.
+  //
+  // A sitting in which two or more files end at Attention needed or Completed.
+  // A sitting with one such file is sent with `status-attention` or
+  // `status-completed` above, unchanged. The two closing paragraphs of each
+  // section are those templates' approved sentences, pluralised.
+  'status-digest': {
+    description:
+      'To the uploader and each Company Administrator, when two or more files reach '
+      + 'Attention needed or Completed in one sitting (HANDOVER-CW025). Approved 10 September 2026.',
+    subject: (p) => {
+      if (p.attention_count > 0 && p.accepted_count > 0) {
+        return `Review update: action needed on ${p.attention_count} file(s), ${p.accepted_count} accepted`;
+      }
+      if (p.attention_count > 0) return `Review update: action needed on ${p.attention_count} file(s)`;
+      return `Review update: ${p.accepted_count} file(s) accepted`;
+    },
+    blocks: (p) => {
+      const attention = p.attention_files || [];
+      const accepted = p.accepted_files || [];
+      return [
+        { p: `Dear ${p.first_name},` },
+        { p: `The Taranis Capital diligence team has reviewed ${p.reviewed_count} file(s) submitted by ${p.company_name}. The outcome for each is set out below.` },
+
+        ...(attention.length ? [
+          { p: `These ${p.attention_count} file(s) need something from ${p.company_name} before they can be accepted:` },
+          ...attention.flatMap((f) => [
+            {
+              lines: [
+                `File: ${f.filename}`,
+                `Checklist item: ${itemLabel(f)}`,
+                `Submitted: ${f.submitted_at} under receipt ${f.receipt_ref}`,
+              ],
+            },
+            { quote: f.reviewer_note },
+          ]),
+          { p: 'Please upload a revised or additional file against each of these items in your workspace. Your original files remain on record; a re-upload creates a new version rather than replacing history.' },
+        ] : []),
+
+        ...(accepted.length ? [
+          { p: `These ${p.accepted_count} file(s) have been reviewed and accepted for due diligence purposes:` },
+          ...acceptedBlocks(accepted),
+        ] : []),
+
+        { p: `${p.company_name}'s checklist now stands at ${p.progress_percent} complete, with ${p.outstanding_count} item(s) still outstanding. Thank you for keeping the process moving.` },
+        { button: { label: 'Open your workspace', url: p.workspace_url } },
+        { signoff: true },
+      ];
+    },
+  },
+
+  // 13 ------------------------------------------------------------------
+  // APPROVED BY MARK, 10 SEPTEMBER 2026, as drafted in HANDOVER-C025 §6.2.
+  // Frozen: a change comes back through Cowork like any other.
+  //
+  // Internal, to the admin address, so no 'Dear' and no sign-off, the same
+  // shape as `upload-notification`. Every upload in the sitting is listed with
+  // where it stands when the digest closes (Mark, 10 September 2026), which is
+  // why this is not `upload-notification` with a longer list: that template's
+  // "staged, not yet formally submitted" is untrue once the company submits
+  // inside the quiet period.
+  'upload-digest': {
+    description:
+      'To admin@taraniscapital.com, one per company per upload sitting (HANDOVER-CW025). '
+      + 'Approved 10 September 2026.',
+    subject: (p) => `Uploads: ${p.company_name}, ${p.file_count} file(s)`,
+    blocks: (p) => {
+      const closing = uploadClosing(p);
+      return [
+        { p: `${p.uploader_names} (${p.company_name}) uploaded ${p.file_count} file(s):` },
+        {
+          lines: (p.files || []).map((f) => {
+            const size = f.size ? ` (${f.size})` : '';
+            const item = [f.item_ref, f.item_description_short].filter(Boolean).join(' ')
+              || 'additional material';
+            const description = f.description ? `, description: "${f.description}"` : '';
+            return `${f.filename}${size}, ${item}${description}. ${uploadStateSentence(f)}`;
+          }),
+        },
+        closing ? { p: closing } : null,
+        { button: { label: 'Open the review queue', url: p.admin_review_url } },
+      ];
+    },
   },
 };
 
