@@ -294,6 +294,69 @@ export function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// ---------------------------------------------------------------------------
+// "Cannot provide" responses (HANDOVER-CW026)
+//
+// A response travels as a file row with `kind: 'statement'`. Its `filename` is
+// already its display label ("No document (not applicable)"), set by the
+// server, so every list that shows a filename shows the right words without
+// help. What these rules add is the "No document" tag, the reason, and the one
+// wording difference: a completed response reads "Accepted", because accepting
+// "we do not hold this" is not the same as receiving a completed document.
+// ---------------------------------------------------------------------------
+
+/** The five reasons, stored value to the label the company chose from. Verbatim, CW026 §3.1. */
+export const STATEMENT_REASON_OPTIONS = [
+  { value: 'not_applicable', label: 'It does not apply to our company' },
+  { value: 'does_not_exist', label: 'It applies to us, but no such document exists' },
+  { value: 'not_yet_available', label: 'It is not ready yet' },
+  { value: 'provided_elsewhere', label: 'We have already provided it under another item' },
+  { value: 'other', label: 'Another reason' },
+];
+
+export const STATEMENT_REASON_LABELS = Object.fromEntries(
+  STATEMENT_REASON_OPTIONS.map((o) => [o.value, o.label])
+);
+
+export const NO_DOCUMENT_LABEL = 'No document';
+export const NO_DOCUMENT_COLOUR = '#595959';
+
+/** Copy for the response card, verbatim from CW026 §3.1. */
+export const STATEMENT_CARD_TITLE = 'Tell us why this cannot be provided';
+export const STATEMENT_CARD_HELP = 'If you have the document, use Add a document instead. If you '
+  + 'can provide part of what is asked, upload what you have and use this to explain the rest.';
+export const STATEMENT_EXPLANATION_HELP = 'This appears on your submission receipt as the '
+  + "company's formal answer to this request, so please be specific. For example: 'The company "
+  + "has no subsidiaries, so there are no subsidiary accounts.'";
+export const STATEMENT_ADDED_MESSAGE = 'Response added. It is not submitted yet, go to Ready to '
+  + 'submit when you are done.';
+export const STATEMENT_EXPLANATION_MIN = 20;
+export const STATEMENT_EXPLANATION_MAX = 1000;
+
+/** True for a response row. */
+export function isResponse(file) {
+  return file?.kind === 'statement';
+}
+
+/** A status chip's words: "Accepted" for a completed response, as briefed. */
+export function fileStatusLabel(status, file) {
+  if (status === 'completed' && isResponse(file)) return 'Accepted';
+  return STATE_LABELS[status] || status;
+}
+
+/** '30 October 2026' from 'YYYY-MM-DD', read as a calendar date with no zone. */
+export function formatCalendarDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ''));
+  if (!match) return '';
+  return `${Number(match[3])} ${MONTHS[Number(match[2]) - 1]} ${match[1]}`;
+}
+
+/** "Expected by the company: 30 October 2026", CW026 §3.7 item 4. */
+export function expectedByText(value) {
+  const date = formatCalendarDate(value);
+  return date ? `Expected by the company: ${date}` : '';
+}
+
 /** Group checklist items by their section, preserving sort order. */
 export function groupBySection(items = []) {
   const sections = new Map();

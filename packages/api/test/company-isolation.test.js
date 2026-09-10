@@ -410,6 +410,101 @@ test('a company_viewer cannot upload, edit or remove files', async (t) => {
 });
 
 // ---------------------------------------------------------------------------
+// 6a. "Cannot provide" responses (HANDOVER-CW026): the two new company routes
+// ---------------------------------------------------------------------------
+
+const RESPONSE_BODY = {
+  reason: 'not_applicable',
+  explanation: 'The company has no subsidiaries, so there are no subsidiary accounts.',
+};
+
+test('no fund-side, admin or viewer token can record or edit a response', async (t) => {
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A, companyRole: 'company_viewer' })),
+  ]);
+  const server = await startTestServer(COMPANY_MOUNTS, pool);
+  t.after(() => server.close());
+
+  const tokens = [
+    ...['investor', 'advisor', 'viewer', 'admin'].map((role) => tokenFor({ role, sub: `user-${role}` })),
+    tokenFor({ role: 'company', companyId: COMPANY_A }),   // a company_viewer membership
+  ];
+  for (const token of tokens) {
+    const create = await server.request('/company/statements', {
+      method: 'POST', token, body: { irlItemId: ITEM_IN_B, ...RESPONSE_BODY },
+    });
+    assert.equal(create.status, 403);
+    const edit = await server.request('/company/statements/some-id', {
+      method: 'PATCH', token, body: RESPONSE_BODY,
+    });
+    assert.equal(edit.status, 403);
+  }
+  assert.equal(pool.sql().some((s) => s.includes('INSERT INTO company_files')), false);
+});
+
+test('a company cannot record a response against another company\'s item by guessing its id', async (t) => {
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['SELECT id, ref, description, state FROM company_irl_items', []],
+  ]);
+  const server = await startTestServer(COMPANY_MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/statements', {
+    method: 'POST',
+    token: tokenFor({ role: 'company', companyId: COMPANY_A }),
+    body: { irlItemId: ITEM_IN_B, ...RESPONSE_BODY },
+  });
+  assert.equal(res.status, 404);
+
+  const lookup = pool.calls.find((c) => c.text.includes('SELECT id, ref, description, state FROM company_irl_items'));
+  assert.equal(lookup.params[1], COMPANY_A, 'scoped by the token claim');
+  assert.equal(pool.sql().some((s) => s.includes('INSERT INTO company_files')), false);
+});
+
+test('a company cannot replace, edit or point a response at another company\'s rows', async (t) => {
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['SELECT id, irl_item_id, version, status, upload_state, kind', []],
+    ['SELECT id, irl_item_id FROM company_files', []],
+    ['SELECT id, ref, description, state FROM company_irl_items', [
+      { id: 'item-a', ref: '1.1', description: 'x', state: 'outstanding' },
+    ]],
+    ['SELECT id, ref, state FROM company_irl_items WHERE id = $1 AND company_id = $2', []],
+  ]);
+  const server = await startTestServer(COMPANY_MOUNTS, pool);
+  t.after(() => server.close());
+  const token = tokenFor({ role: 'company', companyId: COMPANY_A });
+
+  const replace = await server.request('/company/statements', {
+    method: 'POST', token, body: { replacesFileId: 'file-in-b', ...RESPONSE_BODY },
+  });
+  assert.equal(replace.status, 404);
+
+  const edit = await server.request('/company/statements/statement-in-b', {
+    method: 'PATCH', token, body: RESPONSE_BODY,
+  });
+  assert.equal(edit.status, 404);
+
+  const pointAt = await server.request('/company/statements', {
+    method: 'POST', token,
+    body: { irlItemId: 'item-a', ...RESPONSE_BODY, reason: 'provided_elsewhere', relatedItemId: ITEM_IN_B },
+  });
+  assert.equal(pointAt.status, 400);
+
+  // Every lookup carried company A from the token, never B.
+  for (const fragment of [
+    'SELECT id, irl_item_id, version, status, upload_state, kind',
+    'SELECT id, irl_item_id FROM company_files',
+    'SELECT id, ref, state FROM company_irl_items WHERE id = $1 AND company_id = $2',
+  ]) {
+    const call = pool.calls.find((c) => c.text.includes(fragment));
+    assert.equal(call.params[1], COMPANY_A, fragment);
+  }
+  assert.equal(pool.sql().some((s) => s.includes('INSERT INTO company_files')), false);
+});
+
+// ---------------------------------------------------------------------------
 // 7. Taranis-side scoping: an assigned reviewer sees one company, not all
 // ---------------------------------------------------------------------------
 

@@ -67,13 +67,15 @@ async function read(buffer, sheetName) {
 // PRE-FILLED
 // ---------------------------------------------------------------------------
 
-test('PRE-FILLED carries the established six columns, in order', async () => {
+test('PRE-FILLED carries the established six columns in order, then Company response', async () => {
   const buffer = await buildPrefilledWorkbook({ companyName: 'Example Bio', items: ITEMS });
   const { headers } = await read(buffer, 'PRE-FILLED');
 
+  // The seventh is HANDOVER-CW026 §3.8, added last so the six people already
+  // read stay where they were.
   assert.deepEqual(headers, [
     'Section', 'Ref', 'Information requested', 'Status',
-    'What Taranis already holds', 'Source document on file',
+    'What Taranis already holds', 'Source document on file', 'Company response',
   ]);
 });
 

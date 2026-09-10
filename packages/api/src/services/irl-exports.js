@@ -7,7 +7,8 @@
  * HANDOVER-C002 §3.3 and code brief §6.1:
  *
  *   PRE-FILLED  Section | Ref | Information requested | Status |
- *               What Taranis already holds | Source document on file
+ *               What Taranis already holds | Source document on file |
+ *               Company response
  *
  *   GAPS        Section | Ref | Information still required | We already hold |
  *               Priority | Notes for company
@@ -23,6 +24,11 @@
  *
  * `ref` is a permanent identifier the company quotes back in correspondence.
  * Both sheets carry it verbatim and neither ever renumbers.
+ *
+ * "Company response" (HANDOVER-CW026 §3.8) is the last PRE-FILLED column: for an
+ * item whose current entries include a submitted "cannot provide" response, the
+ * response's label and explanation. PRE-FILLED only. GAPS goes to the company,
+ * has a fixed column set, and is unchanged.
  */
 import ExcelJS from 'exceljs';
 import { findUnsafeRowText, describeUnsafe } from './company-visible-text.js';
@@ -98,6 +104,7 @@ export async function buildPrefilledWorkbook({ companyName, items = [] }) {
     { header: 'Status', key: 'status', width: 18 },
     { header: 'What Taranis already holds', key: 'alreadyHeld', width: 44 },
     { header: 'Source document on file', key: 'source', width: 40 },
+    { header: 'Company response', key: 'companyResponse', width: 60 },
   ];
   styleHeader(sheet);
 
@@ -109,11 +116,13 @@ export async function buildPrefilledWorkbook({ companyName, items = [] }) {
       status: statusLabel(item.state),
       alreadyHeld: item.already_held || '',
       source: item.source_document || '',
+      companyResponse: item.company_response || '',
     });
   }
 
   sheet.getColumn('description').alignment = { wrapText: true, vertical: 'top' };
   sheet.getColumn('alreadyHeld').alignment = { wrapText: true, vertical: 'top' };
+  sheet.getColumn('companyResponse').alignment = { wrapText: true, vertical: 'top' };
 
   const meta = workbook.addWorksheet('About');
   meta.columns = [{ width: 26 }, { width: 80 }];
@@ -202,8 +211,11 @@ export async function buildGapsWorkbook({ companyName, items = [] }) {
  * This is the only shape the builders above accept, and `internal_note` is not
  * in it. An internal note therefore cannot reach a company-facing spreadsheet
  * by anyone forgetting to exclude it at the query.
+ *
+ * `company_response` is the company's own words, not Taranis's, and only the
+ * PRE-FILLED builder reads it. The route supplies it from `companyResponses()`.
  */
-export function exportableItem(row) {
+export function exportableItem(row, { companyResponse = null } = {}) {
   return {
     section: row.section,
     ref: row.ref,
@@ -213,5 +225,25 @@ export function exportableItem(row) {
     already_held: row.already_held,
     note_for_company: row.note_for_company,
     source_document: row.source_document,
+    company_response: companyResponse,
   };
+}
+
+/**
+ * "{label}: {explanation}" per item, from its current submitted responses.
+ *
+ * Takes `company_files` rows: current means submitted, not deleted and not
+ * superseded, and there is at most one per item by the rule the portal
+ * enforces. The label is stored in `filename` (migration 022), so this is the
+ * same text the receipt and the review queue show.
+ */
+export function companyResponses(rows = []) {
+  const byItem = new Map();
+  for (const r of rows) {
+    if (r.kind !== 'statement' || r.upload_state !== 'submitted') continue;
+    if (r.deleted_at || r.status === 'superseded') continue;
+    const text = `${r.filename}: ${r.description}`;
+    byItem.set(r.irl_item_id, byItem.has(r.irl_item_id) ? `${byItem.get(r.irl_item_id)}\n${text}` : text);
+  }
+  return byItem;
 }

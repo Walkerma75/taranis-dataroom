@@ -4,7 +4,8 @@ import {
 } from 'antd';
 import { PrinterOutlined } from '@ant-design/icons';
 import { api } from '../../api/client.js';
-import { formatBytes, formatUtc } from './irlDisplay.js';
+import { formatBytes, formatUtc, isResponse } from './irlDisplay.js';
+import { NoDocumentTag, ResponseMeta } from './ResponseParts.jsx';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -131,12 +132,16 @@ export default function ReceiptsPage() {
                           ? <Text style={{ fontFamily: 'monospace' }}>{f.itemRef}</Text>
                           : <Tag>Additional document</Tag>}
                         <Text>{f.filename}</Text>
+                        {isResponse(f) && <NoDocumentTag />}
                       </Space>
                     )}
                     description={(
                       <Space direction="vertical" size={0}>
                         <Text>{f.description}</Text>
-                        <Text type="secondary">{formatBytes(f.sizeBytes)}</Text>
+                        {/* A response is the company's formal answer: no size, its reason instead. */}
+                        {isResponse(f)
+                          ? <ResponseMeta file={f} />
+                          : <Text type="secondary">{formatBytes(f.sizeBytes)}</Text>}
                       </Space>
                     )}
                   />
