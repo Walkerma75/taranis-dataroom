@@ -48,6 +48,11 @@ import {
   shortDescription,
 } from '../services/notifications.js';
 import { adminNominationUrl, adminReviewUrl, companyReceiptsUrl } from '../services/links.js';
+import {
+  FAMILIES,
+  queueDigestEvent,
+  sessionDigestsEnabled,
+} from '../services/notification-digests.js';
 
 /**
  * How a proposed company role reads in the nomination email. The stored values
@@ -106,9 +111,24 @@ async function itemSummary(irlItemId, companyId) {
  * 500 at this point would tell a company its upload failed when the bytes are
  * safely in S3 and the row is in the database. The notification is the least
  * important thing that happened in the request and must behave like it.
+ *
+ * With session digests on (the default, HANDOVER-CW025) this records a digest
+ * event instead, and the admin receives one `upload-digest` per company per
+ * sitting listing every file. Switched off, it is the per-upload message it
+ * always was.
  */
-async function queueUploadNotification(req, { files, itemRef }) {
+async function queueUploadNotification(req, { fileId, files, itemRef }) {
   try {
+    if (sessionDigestsEnabled()) {
+      await queueDigestEvent(pool, {
+        family: FAMILIES.UPLOADS,
+        recipient: adminRecipient(),
+        companyId: req.company.id,
+        event: { fileId },
+      });
+      return;
+    }
+
     await queue(pool, {
       template: 'upload-notification',
       recipient: adminRecipient(),
@@ -384,12 +404,15 @@ router.post(
         ip: req.ip,
       });
 
-      // Per upload, not per day: decision 8 settled on per-event notifications
-      // with no digest (HANDOVER-C003 §5.5). This handler has no transaction of
-      // its own — the file row is a single INSERT — so the outbox row is
-      // written on the pool. It is queued after the row exists, so an admin can
-      // never be told about a file that failed to insert.
+      // Decision 8 (HANDOVER-C003 §5.5) was per-event with no digest; CW025
+      // replaced it with one digest per sitting, which is what
+      // queueUploadNotification now records unless digests are switched off.
+      // This handler has no transaction of its own — the file row is a single
+      // INSERT — so either row is written on the pool. It is queued after the
+      // file row exists, so an admin can never be told about a file that failed
+      // to insert.
       await queueUploadNotification(req, {
+        fileId: row.id,
         files: [{
           filename: stored.filename,
           size: formatBytes(stored.size),
@@ -505,6 +528,7 @@ router.post(
       // as a duplicate of the one announcing version 1.
       const item = await itemSummary(previous.irl_item_id, req.company.id);
       await queueUploadNotification(req, {
+        fileId: row.id,
         files: [{
           filename: stored.filename,
           size: formatBytes(stored.size),

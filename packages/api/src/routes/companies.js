@@ -44,6 +44,11 @@ import {
   workspaceUrl,
 } from '../services/links.js';
 import {
+  FAMILIES,
+  queueDigestEvents,
+  sessionDigestsEnabled,
+} from '../services/notification-digests.js';
+import {
   canActivate,
   activationRefusalMessage,
   canInviteUsers,
@@ -976,8 +981,12 @@ router.get('/:id/irl-items', requireCompanyAccess(), async (req, res) => {
  * Logged and swallowed on failure, like the other post-commit notifications:
  * the item is already added and audited, and a reviewer must not see adding an
  * item fail because a message could not be queued.
+ *
+ * With session digests on (HANDOVER-CW025) each user gets a digest event, and
+ * items added one at a time in a sitting arrive as one approved `new-items`
+ * message listing them all, rather than one message per item.
  */
-async function queueNewItemsNotification(companyId, { items, noteForCompany }) {
+async function queueNewItemsNotification(companyId, { itemId, items, noteForCompany }) {
   try {
     const { rows } = await pool.query(
       `SELECT c.legal_name, u.email, u.display_name
@@ -990,6 +999,16 @@ async function queueNewItemsNotification(companyId, { items, noteForCompany }) {
       [companyId]
     );
     if (rows.length === 0) return;
+
+    if (sessionDigestsEnabled()) {
+      await queueDigestEvents(pool, {
+        family: FAMILIES.NEW_ITEMS,
+        recipients: rows.map((r) => r.email),
+        companyId,
+        event: { itemId },
+      });
+      return;
+    }
 
     await queueEach(pool, {
       template: 'new-items',
@@ -1062,6 +1081,7 @@ router.post('/:id/irl-items', requireCompanyAccess({ write: true }), async (req,
     // the payload for exactly that reason, and only the two company-safe
     // columns are named.
     await queueNewItemsNotification(req.params.id, {
+      itemId: item.id,
       items: [{
         ref: item.ref,
         description_short: shortDescription(item.description),
@@ -1804,8 +1824,8 @@ async function loadFileForTaranis(req, res, { write }) {
  * portal. Reading the uploader straight off the file row would keep emailing a
  * leaver about a company they can no longer see.
  */
-async function statusRecipients(companyId, uploadedBy) {
-  const { rows } = await pool.query(
+async function statusRecipients(companyId, uploadedBy, db = pool) {
+  const { rows } = await db.query(
     `SELECT DISTINCT u.email, u.display_name
        FROM company_users cu
        JOIN users u ON u.id = cu.user_id
@@ -1911,6 +1931,30 @@ async function queueStatusNotification(client, { file, status, note }) {
 }
 
 /**
+ * Record a status change for the recipients' session digests (HANDOVER-CW025).
+ *
+ * Unlike `queueStatusNotification` this runs INSIDE the status transaction.
+ * That function has to wait for the commit because its message quotes the
+ * progress figure, which is only right once the change is folded in; a digest
+ * reads progress when it closes, so that reason is gone, and so is the window
+ * in which a crash after the commit lost the message. The event commits with
+ * the change or not at all.
+ *
+ * Not swallowed, for the same reason: inside a transaction a failed INSERT has
+ * already aborted it, so the only honest outcome is the 500 the caller sends.
+ * The submission receipt is queued on the same terms.
+ */
+async function queueStatusDigestEvents(client, { file }) {
+  const recipients = await statusRecipients(file.company_id, file.uploaded_by, client);
+  await queueDigestEvents(client, {
+    family: FAMILIES.STATUS,
+    recipients,
+    companyId: file.company_id,
+    event: { fileId: file.id },
+  });
+}
+
+/**
  * PATCH /company-files/:fileId/status
  *
  * A note is mandatory for 'attention_needed' — the company is being asked to do
@@ -1946,6 +1990,12 @@ companyFilesRouter.patch('/:fileId/status', async (req, res) => {
     return res.status(409).json({ error: 'This file has not been formally submitted yet' });
   }
 
+  // Only these two statuses notify. 'received', 'in_review' and 'superseded'
+  // are internal progress that a company can see in its workspace and does not
+  // need an email about, and there is no approved template for them.
+  const notifies = status === 'attention_needed' || status === 'completed';
+  const digests = sessionDigestsEnabled();
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1956,10 +2006,17 @@ companyFilesRouter.patch('/:fileId/status', async (req, res) => {
       [file.id, status, note?.trim() || null, req.user.sub]
     );
 
+    // Session digests: the event is written with the change (see
+    // queueStatusDigestEvents). The message itself is built when the sitting
+    // ends, from the files as they stand then.
+    if (notifies && digests) await queueStatusDigestEvents(client, { file });
+
     await client.query('COMMIT');
 
     if (file.irl_item_id) await recomputeItemState(file.irl_item_id);
 
+    // With digests switched off, one message per change, exactly as before.
+    //
     // After the commit and after the recompute, deliberately, on both counts.
     //
     // After the commit because these two messages are the only ones in Phase 1b
@@ -1975,11 +2032,7 @@ companyFilesRouter.patch('/:fileId/status', async (req, res) => {
     // message. That is the right way round: a company that hears nothing checks
     // its workspace and sees the change, whereas a company told the wrong
     // progress figure has been given a wrong number in writing.
-    //
-    // Only these two statuses notify. 'received', 'in_review' and 'superseded'
-    // are internal progress that a company can see in its workspace and does
-    // not need an email about, and there is no approved template for them.
-    if (status === 'attention_needed' || status === 'completed') {
+    if (notifies && !digests) {
       await queueStatusNotification(pool, { file, status, note });
     }
 

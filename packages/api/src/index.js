@@ -11,6 +11,7 @@ import { getScanner } from './services/scanner.js';
 import { getMailer } from './services/email.js';
 import { startOutboxWorker } from './services/notifications.js';
 import { startDigestWorker, digestConfigFromEnv } from './services/dd-digest.js';
+import { startDigestFlushWorker, sessionDigestConfig } from './services/notification-digests.js';
 import { startSesEventConsumer } from './services/ses-events.js';
 import { assertConfigured as assertPortalUrl } from './services/links.js';
 
@@ -180,6 +181,24 @@ app.use((err, _req, res, _next) => {
     // The outbox drain. A plain interval in this process, per the code brief
     // §4: no queue service, no scheduler, no second container.
     startOutboxWorker();
+
+    // Session digests (HANDOVER-CW025). The timer that closes a sitting into
+    // one outbox row runs even when digests are switched off, so events
+    // recorded before the switch are still sent. Say which mode the routes are
+    // in, because the two produce very different inboxes.
+    const sessions = sessionDigestConfig();
+    if (sessions.enabled) {
+      console.log(
+        `[digests] On: status, upload and new-item emails are sent as one digest per sitting `
+        + `(quiet ${sessions.quietMinutes} min, maximum hold ${sessions.maxHoldMinutes} min).`
+      );
+    } else {
+      console.log(
+        '[digests] Off (NOTIFY_DIGEST_ENABLED is false): one email per event. '
+        + 'Digests already open will still be sent.'
+      );
+    }
+    startDigestFlushWorker();
 
     // The daily outstanding-actions digest. Same arrangement as the outbox for
     // the same reason, and off unless DD_DIGEST_ENABLED is set, which it is not
