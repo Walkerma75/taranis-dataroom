@@ -792,6 +792,73 @@ test('the review queue publishes the same decision as the Files tab', async (t) 
   assert.match(infected.downloadBlockedReason, /quarantined/);
 });
 
+// ---------------------------------------------------------------------------
+// What the review queue shows
+//
+// Taking a file up used to make it disappear: the queue's Set status button
+// defaults to In review, and the queue was 'received' only, so a submission
+// somebody started reading and did not finish appeared on no other screen than
+// its own company's Files tab. The dashboard counts both states, so the queue
+// has to be able to show both or the tile would link to a screen with fewer
+// rows on it than the number just clicked (HANDOVER-C020 D3).
+// ---------------------------------------------------------------------------
+
+function queuePool() {
+  return fakePool([
+    ['FROM company_files f\n       JOIN companies c', [
+      { ...submittedFile(FILE_1, 'clean'), legal_name: 'Example Bio' },
+    ]],
+  ]);
+}
+
+/** The status array the handler passed as $1. */
+function statusesAsked(pool) {
+  const call = pool.calls.find((c) => c.text.includes('FROM company_files f'));
+  return call?.params?.[0];
+}
+
+test('the review queue asks for received only unless told otherwise', async (t) => {
+  const pool = queuePool();
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/review-queue', { token: adminToken() });
+  assert.equal(res.status, 200);
+  assert.deepEqual(statusesAsked(pool), ['received']);
+  // The row carries its status now, so a mixed view can label it.
+  assert.equal(res.body[0].status, 'received');
+});
+
+test('the queue can be asked for what is part way through review, or for both', async (t) => {
+  for (const [filter, expected] of [
+    ['in_review', ['in_review']],
+    ['all', ['received', 'in_review']],
+    ['received', ['received']],
+  ]) {
+    const pool = queuePool();
+    const server = await startTestServer(MOUNTS, pool);
+
+    const res = await server.request(`/review-queue?status=${filter}`, { token: adminToken() });
+    assert.equal(res.status, 200, `status=${filter} was refused`);
+    assert.deepEqual(statusesAsked(pool), expected);
+
+    await server.close();
+  }
+});
+
+test('an unknown status filter is refused rather than silently widened', async (t) => {
+  // Falling back to everything would be the dangerous default: 'completed' and
+  // 'superseded' are not awaiting anyone and must never appear in a queue.
+  const pool = queuePool();
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/review-queue?status=completed', { token: adminToken() });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /received, in_review, all/);
+  assert.equal(pool.calls.length, 0);
+});
+
 test('a clean file is downloadable and is not flagged unscanned', async (t) => {
   const pool = fakePool([
     ['FROM company_files f\n       JOIN users u', [submittedFile(FILE_1, 'clean')]],

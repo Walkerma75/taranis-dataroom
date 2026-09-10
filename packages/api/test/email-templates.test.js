@@ -70,6 +70,17 @@ function fullPayload(overrides = {}) {
     outstanding_high_count: 4,
     outstanding_total_count: 12,
 
+    // The draft digest (CW020 §3.5).
+    digest_date: '2 September 2026',
+    awaiting_taranis_count: 6,
+    awaiting_company_count: 3,
+    company_lines: ['Example Bio Ltd, Biotech KSA: 6 awaiting Taranis (4 to open, 2 in review).'],
+    taranis_amber_days: 1,
+    taranis_red_days: 3,
+    company_amber_days: 3,
+    company_red_days: 7,
+    dashboard_url: 'https://dataroom.taraniscapital.com/dashboard',
+
     ...overrides,
   };
 }
@@ -79,7 +90,11 @@ function fullPayload(overrides = {}) {
 // ---------------------------------------------------------------------------
 
 test('all ten approved templates are present, in the order of the approved file', () => {
-  assert.deepEqual(TEMPLATE_IDS, [
+  // The eleventh, `dd-digest`, is a DRAFT and is deliberately not part of this
+  // list: this assertion is about the approved file, and the draft is not in it.
+  // It is asserted separately below, and it stays out of the approved order
+  // until Mark's wording comes back through Cowork.
+  assert.deepEqual(TEMPLATE_IDS.slice(0, 10), [
     'company-invite',
     'nomination-pending',
     'upload-notification',
@@ -91,6 +106,49 @@ test('all ten approved templates are present, in the order of the approved file'
     'new-items',
     'reminder-outstanding',
   ]);
+});
+
+test('the digest template is present, last, and wired', () => {
+  assert.equal(TEMPLATE_IDS.length, 11);
+  assert.equal(TEMPLATE_IDS[10], 'dd-digest');
+  // Unlike `new-comment` and `reminder-outstanding` this one has a caller, so
+  // it carries no `wired: false` marker.
+  assert.equal(TEMPLATES['dd-digest'].wired, undefined);
+});
+
+test('the digest wording is frozen, as approved on 2 September 2026', () => {
+  // The same protection `company-invite` gets below, and for the same reason:
+  // this is approved copy now, so an edit has to fail the suite rather than
+  // reach an inbox. It was drafted on the code side and approved in
+  // HANDOVER-C020 §6, which is the exception to how the other ten arrived, not
+  // a licence to reword this one in passing.
+  const { subject, text } = renderTemplate('dd-digest', fullPayload());
+
+  assert.equal(subject, 'Due diligence: 6 awaiting Taranis, 3 awaiting companies');
+
+  assert.ok(text.includes(
+    'Outstanding due diligence actions as at the morning of 2 September 2026.'
+  ));
+  assert.ok(text.includes('Awaiting Taranis: 6\nAwaiting companies: 3'));
+  assert.ok(text.includes(
+    'Example Bio Ltd, Biotech KSA: 6 awaiting Taranis (4 to open, 2 in review).'
+  ));
+  assert.ok(text.includes(
+    'An item is flagged amber after 1 working day(s) with Taranis and red after 3. '
+    + 'On the company side the flags are 3 and 7 calendar days, counted from the date '
+    + 'the company was asked for something specific. Checklist items nobody has started '
+    + 'are counted but not aged.'
+  ));
+  assert.ok(text.includes(
+    'Open the dashboard: https://dataroom.taraniscapital.com/dashboard'
+  ));
+
+  // Internal, to the admin address, so it opens with no greeting and closes
+  // with no sign-off, matching the other two that go there.
+  assert.equal(text.startsWith('Outstanding due diligence actions'), true);
+  assert.equal(text.includes('Kind regards'), false);
+  // UK English, no em dashes in anything a person reads.
+  assert.equal(text.includes('—'), false);
 });
 
 test('every template renders a subject, an HTML part and a plain-text part', () => {

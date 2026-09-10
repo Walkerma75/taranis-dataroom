@@ -89,6 +89,53 @@ export function fileNoteHeading(status) {
   return 'Note from Taranis';
 }
 
+/**
+ * Ageing flags on the dashboard's due diligence panel and the nav badge.
+ *
+ * The three colours are the ones already in use elsewhere on these screens, not
+ * a fourth palette: green is the dashboard's own figure colour, gold is the
+ * warning it already uses for unread notices, and the red is the one carrying
+ * the attention badge and the missing-gate cross on the pipeline. A dashboard
+ * that invented its own red would leave two reds meaning the same thing.
+ *
+ * The API decides which level a thing is in and says so in the payload. Nothing
+ * here computes an age: CW020 §3.1 asks for the arithmetic to be done once, on
+ * the server, so that the working-day rule cannot be reimplemented slightly
+ * differently in a browser.
+ */
+export const LEVEL_COLOURS = {
+  none: '#2C3E35',
+  amber: '#C9A84C',
+  red: '#B54A32',
+};
+
+export const LEVEL_LABELS = {
+  none: 'On track',
+  amber: 'Ageing',
+  red: 'Overdue',
+};
+
+export function levelColour(level) {
+  return LEVEL_COLOURS[level] || LEVEL_COLOURS.none;
+}
+
+/**
+ * 'oldest 3 working days', or null when nothing has aged enough to be worth
+ * saying. Reads the days and the unit the server sent, and counts nothing.
+ */
+export function ageCaption(bucket, unit = 'working') {
+  if (!bucket?.since || !bucket.days) return null;
+  const plural = bucket.days === 1 ? '' : 's';
+  return `oldest ${bucket.days} ${unit} day${plural}`;
+}
+
+/** How a recent activity row reads. One line, past tense, actor first. */
+export const ACTIVITY_LABELS = {
+  upload: 'uploaded',
+  submission: 'submitted',
+  status: 'status set to',
+};
+
 export const PRIORITY_LABELS = {
   high: 'High',
   medium: 'Medium',

@@ -1,5 +1,5 @@
 /**
- * The ten approved templates.
+ * The eleven approved templates.
  *
  * ---------------------------------------------------------------------------
  * DO NOT EDIT THE WORDING IN THIS FILE
@@ -25,6 +25,13 @@
  * ship here rendered and tested because the wording is approved now and because
  * a template with no caller is a smaller thing to carry than a template written
  * from memory in six months (HANDOVER-CW011 §3.5).
+ *
+ * THE ELEVENTH CAME THE OTHER WAY ROUND. `dd-digest` was drafted on the code
+ * side, set out in full in HANDOVER-C020 §6, and approved by Mark on 2 September
+ * 2026 as drafted. It is frozen now on exactly the same terms as the other ten;
+ * the note at its own entry records the difference so nobody reads it as a
+ * precedent. Its caller is additionally gated by `DD_DIGEST_ENABLED`, which is
+ * an operational switch for where the digest sends, not a review gate.
  */
 import { renderHtml, renderText } from './layout.js';
 
@@ -201,6 +208,45 @@ export const TEMPLATES = {
       { p: `If any item does not apply to ${p.company_name}, or will take time to prepare, let us know through the comments on that item; a credible date is always better than silence.` },
       { button: { label: 'View outstanding items', url: p.workspace_url } },
       { signoff: true },
+    ],
+  },
+
+  // 11 ------------------------------------------------------------------
+  // APPROVED BY MARK, 2 SEPTEMBER 2026, as drafted. Now frozen on the same
+  // terms as the ten above it: a change comes back through Cowork as an amended
+  // approved wording and is not the code side's to make.
+  //
+  // Its provenance differs from theirs and the difference is worth keeping.
+  // The other ten were approved wording that the code implemented; this one was
+  // drafted on the code side, set out in full in HANDOVER-C020 §6 for review,
+  // and approved there. That is the exception, not a new way of working.
+  //
+  // Internal, to admin@taraniscapital.com, so no 'Dear' and no signoff, the
+  // same shape as 'nomination-pending' and 'submission-notification'.
+  'dd-digest': {
+    description:
+      'To ADMIN_NOTIFICATION_EMAIL, once each weekday morning when either bucket is '
+      + 'non-empty. Approved 2 September 2026; sends only where DD_DIGEST_ENABLED is set.',
+    subject: (p) =>
+      `Due diligence: ${p.awaiting_taranis_count} awaiting Taranis, `
+      + `${p.awaiting_company_count} awaiting companies`,
+    blocks: (p) => [
+      { p: `Outstanding due diligence actions as at the morning of ${p.digest_date}.` },
+      {
+        lines: [
+          `Awaiting Taranis: ${p.awaiting_taranis_count}`,
+          `Awaiting companies: ${p.awaiting_company_count}`,
+        ],
+      },
+      { lines: p.company_lines },
+      {
+        p: `An item is flagged amber after ${p.taranis_amber_days} working day(s) with `
+         + `Taranis and red after ${p.taranis_red_days}. On the company side the flags are `
+         + `${p.company_amber_days} and ${p.company_red_days} calendar days, counted from `
+         + `the date the company was asked for something specific. Checklist items nobody `
+         + `has started are counted but not aged.`,
+      },
+      { button: { label: 'Open the dashboard', url: p.dashboard_url } },
     ],
   },
 };

@@ -10,6 +10,7 @@ import { getStorage } from './services/storage.js';
 import { getScanner } from './services/scanner.js';
 import { getMailer } from './services/email.js';
 import { startOutboxWorker } from './services/notifications.js';
+import { startDigestWorker, digestConfigFromEnv } from './services/dd-digest.js';
 import { startSesEventConsumer } from './services/ses-events.js';
 import { assertConfigured as assertPortalUrl } from './services/links.js';
 
@@ -29,6 +30,7 @@ import companyRoutes, {
   irlTemplatesRouter,
 } from './routes/companies.js';
 import companyPortalRoutes from './routes/company-portal.js';
+import ddSummaryRoutes from './routes/dd-summary.js';
 import maintenanceRoutes from './routes/maintenance.js';
 
 const app = express();
@@ -111,6 +113,10 @@ app.use('/company-files', companyFilesRouter);
 app.use('/review-queue', reviewQueueRouter);
 app.use('/irl-templates', irlTemplatesRouter);
 
+// The dashboard's due diligence panel and the nav badge. Admin-gated inside the
+// router, and narrower than the two mounts above on purpose: see its header.
+app.use('/dd-summary', ddSummaryRoutes);
+
 // Operator-only actions that need the task's own credentials (see the module
 // header for why these are not scripts). Admin-gated inside the router.
 app.use('/maintenance', maintenanceRoutes);
@@ -174,6 +180,21 @@ app.use((err, _req, res, _next) => {
     // The outbox drain. A plain interval in this process, per the code brief
     // §4: no queue service, no scheduler, no second container.
     startOutboxWorker();
+
+    // The daily outstanding-actions digest. Same arrangement as the outbox for
+    // the same reason, and off unless DD_DIGEST_ENABLED is set, which it is not
+    // until the wording is approved. Say which, so a task that is silently not
+    // sending it is visible in the logs rather than assumed to be working.
+    const digest = digestConfigFromEnv();
+    if (digest.enabled) {
+      console.log(
+        `[dd-digest] Enabled: one digest each weekday from ${digest.hourLocal}:00 `
+        + `at UTC+${digest.utcOffsetHours}, when anything is outstanding.`
+      );
+    } else {
+      console.log('[dd-digest] Disabled (DD_DIGEST_ENABLED is not "true"). No digest will be sent.');
+    }
+    startDigestWorker();
 
     // Bounce and complaint ingestion. Does nothing and says so until
     // SES_EVENTS_QUEUE_URL is set, which waits on the console work in

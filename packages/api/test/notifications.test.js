@@ -82,6 +82,42 @@ test('queue writes the outbox row on the client it is given', async () => {
   assert.deepEqual(JSON.parse(call.params[2]), { first_name: 'Alex' });
 });
 
+test('a message queued by a clock carries a dedupe key, and one queued by a request does not', async () => {
+  // A request happens once. A timer fires again every time the process that
+  // watches it restarts, and twice over during a rolling deploy, so the daily
+  // digest would go out afresh after every deployment without this. The unique
+  // index in migration 020 decides it, not a check the caller races on.
+  const keyed = fakePool([['INSERT INTO notification_outbox', [{ id: 'n-1' }]]]);
+  await queue(keyed, {
+    template: 'dd-digest',
+    recipient: 'admin@taraniscapital.com',
+    dedupeKey: 'dd-digest:2026-09-09',
+  });
+
+  const [keyedCall] = keyed.calls;
+  assert.equal(keyedCall.params[3], 'dd-digest:2026-09-09');
+  // The conflict target must name the partial index's predicate as well as its
+  // column: PostgreSQL cannot match a partial index without it.
+  assert.match(keyedCall.text, /ON CONFLICT \(dedupe_key\) WHERE dedupe_key IS NOT NULL/);
+
+  const unkeyed = fakePool([['INSERT INTO notification_outbox', [{ id: 'n-2' }]]]);
+  await queue(unkeyed, { template: 'company-invite', recipient: 'contact@examplebio.com' });
+  assert.equal(unkeyed.calls[0].params[3], null);
+});
+
+test('a second queue under the same key returns null, and that is not a failure', async () => {
+  // What ON CONFLICT DO NOTHING produces: no row, no error. The caller reads it
+  // as the mechanism working rather than as a send that went missing.
+  const client = fakePool([['INSERT INTO notification_outbox', []]]);
+  const id = await queue(client, {
+    template: 'dd-digest',
+    recipient: 'admin@taraniscapital.com',
+    dedupeKey: 'dd-digest:2026-09-09',
+  });
+
+  assert.equal(id, null);
+});
+
 test('queue refuses a row with no recipient rather than failing the caller', async () => {
   // The call site is inside somebody's transaction. Throwing would roll back
   // the upload the message was only meant to announce.
