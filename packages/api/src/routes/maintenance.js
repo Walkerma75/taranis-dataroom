@@ -27,6 +27,9 @@ import { getSesSuppression } from '../services/email.js';
 import {
   runReset, resetEnabled, ResetError, CONFIRM_PHRASE, ENABLE_FLAG,
 } from '../services/platform-reset.js';
+import {
+  report as irlTextReport, quarantine as irlTextQuarantine, describeFinding,
+} from '../services/irl-text-audit.js';
 
 const router = Router();
 router.use(requireAuth, rejectCompanyRole, requireRole('admin'));
@@ -174,6 +177,84 @@ router.post('/email-suppressions/release', async (req, res) => {
     });
   } catch (err) {
     console.error('[maintenance] Suppression release failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /maintenance/irl-text-audit
+ *
+ * Every stored `already_held` or `note_for_company` carrying a CASS score or an
+ * internal source (HANDOVER-CW019 §3.5). Read-only, so it is safe to run at any
+ * time and is the check to run after loading per-company pre-filled text.
+ *
+ * NOT behind `ALLOW_PLATFORM_RESET`. That flag guards a destructive one-off and
+ * is meant to be absent; this has to work on an ordinary day, which is the same
+ * reasoning as `email-status`.
+ */
+router.get('/irl-text-audit', async (req, res) => {
+  try {
+    const result = await irlTextReport();
+    if (result.findings.length) {
+      console.error(
+        `[maintenance] IRL text audit found ${result.findings.length} finding(s): `
+        + result.findings.map(describeFinding).join('; ')
+      );
+    }
+    res.json({
+      scanned: result.scanned,
+      findingCount: result.findings.length,
+      companies: result.companies,
+      findings: result.findings,
+    });
+  } catch (err) {
+    console.error('[maintenance] IRL text audit failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * POST /maintenance/irl-text-audit/quarantine
+ *   { "confirm": "QUARANTINE COMPANY VISIBLE TEXT" }
+ *
+ * Moves every offending value into `internal_note`, blanks the company-visible
+ * column and records the refs. It does NOT redraft the wording: run the GET
+ * first, then this, then rewrite each recorded ref by hand.
+ *
+ * The confirmation phrase is the whole of the confirmation step, as with the
+ * platform reset. An administrator is exactly who would call this, so the role
+ * check is not the control.
+ */
+const QUARANTINE_PHRASE = 'QUARANTINE COMPANY VISIBLE TEXT';
+
+router.post('/irl-text-audit/quarantine', async (req, res) => {
+  if ((req.body || {}).confirm !== QUARANTINE_PHRASE) {
+    return res.status(400).json({
+      error: `Send { "confirm": "${QUARANTINE_PHRASE}" } to proceed.`,
+    });
+  }
+
+  try {
+    const result = await irlTextQuarantine({ actorId: req.user.sub });
+
+    await logAudit({
+      action: 'maintenance.irl_text_quarantined',
+      userId: req.user.sub,
+      detail: { items: result.items, findings: result.moved.length },
+      ip: req.ip,
+    });
+
+    res.json({
+      message: result.moved.length
+        ? 'Moved to the internal note. Each ref below still needs rewriting by hand.'
+        : 'Nothing to move. No stored company-visible text carries an internal reference.',
+      scanned: result.scanned,
+      items: result.items,
+      companies: result.companies,
+      moved: result.moved,
+    });
+  } catch (err) {
+    console.error('[maintenance] IRL text quarantine failed:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
