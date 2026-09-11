@@ -99,7 +99,7 @@ async function loadDownloadCounts(client, formIds) {
   const { rows } = await client.query(
     `SELECT resource_id, COUNT(*) AS downloads
      FROM audit_log
-     WHERE action = 'company_form.downloaded' AND resource_id = ANY($1::text[])
+     WHERE action = 'company_form.downloaded' AND resource_id = ANY($1::uuid[])
      GROUP BY resource_id`,
     [formIds]
   );
