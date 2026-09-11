@@ -32,6 +32,7 @@ import companyRoutes, {
 } from './routes/companies.js';
 import companyPortalRoutes from './routes/company-portal.js';
 import ddSummaryRoutes from './routes/dd-summary.js';
+import ddFormsRoutes from './routes/dd-forms.js';
 import maintenanceRoutes from './routes/maintenance.js';
 
 const app = express();
@@ -113,6 +114,9 @@ app.use('/companies', companyRoutes);
 app.use('/company-files', companyFilesRouter);
 app.use('/review-queue', reviewQueueRouter);
 app.use('/irl-templates', irlTemplatesRouter);
+// Standard DD forms, published once for every company (CW027). Admin-gated
+// inside the router; the company side lives under /company/forms.
+app.use('/forms', ddFormsRoutes);
 
 // The dashboard's due diligence panel and the nav badge. Admin-gated inside the
 // router, and narrower than the two mounts above on purpose: see its header.

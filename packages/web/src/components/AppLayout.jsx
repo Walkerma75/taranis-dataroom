@@ -9,6 +9,7 @@ import {
   BellOutlined,
   SolutionOutlined,
   InboxOutlined,
+  FormOutlined,
   SettingOutlined,
   LogoutOutlined,
   SafetyCertificateOutlined,
@@ -126,6 +127,16 @@ export default function AppLayout() {
             icon: <InboxOutlined />,
             label: 'Review Queue',
           },
+          // Standard DD forms are published to every company, so managing them
+          // is admin-only even though assigned reviewers see the two entries
+          // above (CW027 §3.3).
+          ...(isAdmin
+            ? [{
+                key: '/admin/forms',
+                icon: <FormOutlined />,
+                label: 'Forms',
+              }]
+            : []),
         ]
       : []),
     // Admin/capability-gated items

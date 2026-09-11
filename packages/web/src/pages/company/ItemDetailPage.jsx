@@ -5,6 +5,7 @@ import {
 } from 'antd';
 import {
   UploadOutlined, ArrowLeftOutlined, DeleteOutlined, SwapOutlined, EditOutlined, DownOutlined,
+  DownloadOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -61,6 +62,29 @@ export default function ItemDetailPage() {
   const [description, setDescription] = useState('');
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [downloadingForm, setDownloadingForm] = useState(null);
+
+  /** Download a standard Taranis form linked to this item (CW027 §3.2). */
+  const downloadForm = async (f) => {
+    setDownloadingForm(f.id);
+    try {
+      const res = await apiFetch(`/company/forms/${f.id}/download`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || 'This form could not be downloaded.');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = f.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      message.error(err.message);
+    }
+    setDownloadingForm(null);
+  };
   // The file being replaced, not just its id: the upload card names it, and a
   // replacement whose target is invisible is the defect this page had.
   const [replacing, setReplacing] = useState(null);
@@ -231,7 +255,7 @@ export default function ItemDetailPage() {
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />;
   if (error) return <Alert message={error} type="error" showIcon />;
 
-  const { item, files, expectedBy } = data;
+  const { item, files, expectedBy, forms = [] } = data;
   const staged = files.filter((f) => f.uploadState === 'staged');
   const submitted = files.filter((f) => f.uploadState === 'submitted');
   const currentResponse = files.find(isCurrentResponse);
@@ -287,6 +311,31 @@ export default function ItemDetailPage() {
           )}
         </Space>
       </Card>
+
+      {forms.length > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          message="Taranis form for this item"
+          description={(
+            <Space direction="vertical" size="small">
+              <Text>Download the form, complete it, and upload the completed form here.</Text>
+              <Space wrap>
+                {forms.map((f) => (
+                  <Button
+                    key={f.id}
+                    icon={<DownloadOutlined />}
+                    loading={downloadingForm === f.id}
+                    onClick={() => downloadForm(f)}
+                  >
+                    {f.title}
+                  </Button>
+                ))}
+              </Space>
+            </Space>
+          )}
+        />
+      )}
 
       {canUpload && (
         <div ref={uploadCardRef}>

@@ -68,7 +68,8 @@ export default function SharedDocumentsPage() {
         <Paragraph type="secondary">
           These are documents Taranis has shared with you. They are for reference. To send us
           something, use the information requests, so that what you upload is recorded against
-          the item it answers and appears on your receipt.
+          the item it answers and appears on your receipt. Standard forms for you to complete are
+          under Forms.
         </Paragraph>
       </div>
 
