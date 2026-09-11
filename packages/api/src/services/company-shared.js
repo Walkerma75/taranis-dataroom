@@ -95,16 +95,30 @@ export function buildSharedFileKey({ companyId, sharedFileId, filename }) {
  * @param {object}   opts.scanner
  */
 export async function storeSharedFile({ file, companyId, sharedFileId, storage, scanner }) {
+  return storeScannedObject({
+    file,
+    key: buildSharedFileKey({ companyId, sharedFileId, filename: file.originalname }),
+    storage,
+    scanner,
+    logPrefix: '[company-shared]',
+  });
+}
+
+/**
+ * Scan a staged multer file and, if it is not infected, stream it into the
+ * store under `key`. The shared-file and DD-form paths both publish Taranis
+ * material to counterparties and share this one implementation, so the scan
+ * rule and the streaming rule cannot drift between them.
+ *
+ * Returns `{ stored: false }` on an infected verdict, having written nothing.
+ * Always removes the staging directory.
+ */
+export async function storeScannedObject({ file, key, storage, scanner, logPrefix = '[company-shared]' }) {
   const stagingDir = file.destination || path.dirname(file.path);
   let body = null;
 
   try {
     const size = fs.statSync(file.path).size;
-    const key = buildSharedFileKey({
-      companyId,
-      sharedFileId,
-      filename: file.originalname,
-    });
 
     // Scanned before the bytes leave for the store, so under a real backend an
     // infected file never reaches the bucket at all.
@@ -124,7 +138,7 @@ export async function storeSharedFile({ file, companyId, sharedFileId, storage, 
     // Without a listener, a late 'error' on a stream whose file the cleanup
     // below has already removed surfaces as an uncaught exception and takes the
     // process down. Same defect the Phase 0 harness caught.
-    body.on('error', (err) => console.warn('[company-shared] Publish stream error:', err.message));
+    body.on('error', (err) => console.warn(`${logPrefix} Publish stream error:`, err.message));
 
     await storage.put(key, {
       body,

@@ -29,6 +29,7 @@ import { getStorage, StorageNotFoundError, STAGING_ROOT } from '../services/stor
 import { getScanner, downloadDecision } from '../services/scanner.js';
 import { storeCompanyUpload, cleanupCompanyStaging } from '../services/company-files.js';
 import { companySharedView } from '../services/company-shared.js';
+import { companyFormView, companyVisibleFormsClause } from '../services/dd-forms.js';
 import { contentDispositionFilename } from '../services/document-files.js';
 import {
   COMPANY_ALLOWED_EXTENSIONS,
@@ -216,6 +217,40 @@ function companyFileView(f) {
 
 // ---------------------------------------------------------------------------
 // GET /company/workspace — the checklist dashboard
+
+// ---------------------------------------------------------------------------
+// Standard DD forms (HANDOVER-CW027). Read-only on this side, like shared
+// documents: there is no route behind an upload, an edit or a delete. A
+// completed form goes back through the item it answers, exactly as any file.
+// ---------------------------------------------------------------------------
+
+/**
+ * Live forms linked to one of this company's items, resolved by (fund, ref).
+ * Returns `{ ref -> [form rows] }` for the refs given, restricted to forms
+ * this company may see (all companies, or its own fund; never withdrawn).
+ */
+async function formsByRef(companyFundId, refs) {
+  if (!refs.length) return new Map();
+  const { rows } = await pool.query(
+    `SELECT f.id, f.title, f.description, f.filename, f.size_bytes, f.content_type,
+            f.version, f.published_at, l.item_ref
+     FROM dd_form_items l
+     JOIN dd_forms f ON f.id = l.form_id
+     WHERE l.fund_id = $1 AND l.item_ref = ANY($2::text[])
+       AND ${companyVisibleFormsClause('f', 1)}
+     ORDER BY f.title`,
+    [companyFundId, refs]
+  );
+  const byRef = new Map();
+  for (const row of rows) {
+    if (!byRef.has(row.item_ref)) byRef.set(row.item_ref, []);
+    byRef.get(row.item_ref).push(row);
+  }
+  return byRef;
+}
+
+// ---------------------------------------------------------------------------
+// GET /company/workspace
 // ---------------------------------------------------------------------------
 router.get('/workspace', async (req, res) => {
   try {
@@ -234,6 +269,9 @@ router.get('/workspace', async (req, res) => {
     );
 
     const visible = companyVisibleItems(items);
+    // "Form" tag on the list: which visible items have a Taranis form to
+    // complete (CW027 §3.2, optional part). One query for the whole list.
+    const forms = await formsByRef(req.company.fundId, visible.map((i) => i.ref));
 
     res.json({
       company: {
@@ -258,6 +296,7 @@ router.get('/workspace', async (req, res) => {
         }),
         submittedFiles: Number(i.submitted_files),
         stagedFiles: Number(i.staged_files),
+        hasForm: forms.has(i.ref),
       })),
     });
   } catch (err) {
@@ -316,6 +355,11 @@ router.get('/items/:itemId', async (req, res) => {
       // not-yet-available response (CW026 §3.7 item 4).
       expectedBy: expectedByFrom(files),
       files: files.map(companyFileView),
+      // The Taranis form(s) this item asks the company to complete, if any
+      // (CW027 §3.2). Resolved by (fund, ref), so a re-imported master cannot
+      // detach them. Each carries this item as its only link.
+      forms: ((await formsByRef(req.company.fundId, [item.ref])).get(item.ref) || [])
+        .map((f) => companyFormView(f, [{ id: item.id, ref: item.ref }])),
     });
   } catch (err) {
     console.error('[company] Item detail error:', err);
@@ -1403,6 +1447,121 @@ router.get('/shared-files/:id/download', async (req, res) => {
     object.body.pipe(res);
   } catch (err) {
     console.error('[company] Shared download error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
+/**
+ * GET /company/forms — current standard forms this company may download.
+ *
+ * Every company role, as "From Taranis". A form addressed to another fund is
+ * not in this list and its id is refused below, so the list and the download
+ * agree from the one `companyVisibleFormsClause`.
+ */
+router.get('/forms', async (req, res) => {
+  try {
+    const { rows: forms } = await pool.query(
+      `SELECT f.id, f.title, f.description, f.filename, f.size_bytes, f.content_type,
+              f.version, f.published_at
+       FROM dd_forms f
+       WHERE ${companyVisibleFormsClause('f', 1)}
+       ORDER BY f.title`,
+      [req.company.fundId]
+    );
+    if (!forms.length) return res.json([]);
+
+    // "For item 14.7": the link resolved to THIS company's item, and only where
+    // the company can see that item. A link to a 'held' item is dropped here,
+    // never shown, so nothing points at a page that would 404.
+    const { rows: links } = await pool.query(
+      `SELECT l.form_id, i.id AS item_id, i.ref, i.state
+       FROM dd_form_items l
+       JOIN company_irl_items i ON i.company_id = $1 AND i.ref = l.item_ref
+       WHERE l.fund_id = $2 AND l.form_id = ANY($3::uuid[])
+       ORDER BY i.sort_order`,
+      [req.company.id, req.company.fundId, forms.map((f) => f.id)]
+    );
+    const itemsByForm = new Map();
+    for (const l of links) {
+      if (!companyVisibleItems([{ state: l.state }]).length) continue;
+      if (!itemsByForm.has(l.form_id)) itemsByForm.set(l.form_id, []);
+      itemsByForm.get(l.form_id).push({ id: l.item_id, ref: l.ref });
+    }
+
+    res.json(forms.map((f) => companyFormView(f, itemsByForm.get(f.id) || [])));
+  } catch (err) {
+    console.error('[company] Forms list error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /company/forms/:id/download
+ *
+ * 404 for anything withdrawn (which includes every superseded version), or
+ * addressed to another fund: the same answer as an id that does not exist.
+ * Audited with the version, so "which version were they given, and when" is
+ * always answerable (CW027 §3.4).
+ */
+router.get('/forms/:id/download', async (req, res) => {
+  try {
+    const { rows: [row] } = await pool.query(
+      `SELECT f.* FROM dd_forms f
+       WHERE f.id = $2 AND ${companyVisibleFormsClause('f', 1)}`,
+      [req.company.fundId, req.params.id]
+    );
+    if (!row) return res.status(404).json({ error: 'Form not found' });
+
+    const decision = downloadDecision(row.scan_state);
+    if (!decision.allowed) {
+      return res.status(409).json({
+        error: 'This form is not available at the moment. Please contact Taranis.',
+      });
+    }
+
+    const storage = await getStorage();
+    let object;
+    try {
+      object = await storage.get(row.s3_key);
+    } catch (err) {
+      if (err instanceof StorageNotFoundError) {
+        return res.status(404).json({ error: 'This form is no longer available' });
+      }
+      throw err;
+    }
+
+    await logAudit({
+      action: 'company_form.downloaded',
+      userId: req.user.sub,
+      resource: 'dd_form',
+      resourceId: row.id,
+      detail: {
+        companyId: req.company.id,
+        formId: row.id,
+        version: Number(row.version),
+        title: row.title,
+        filename: row.filename,
+        by: 'company',
+      },
+      ip: req.ip,
+    });
+
+    res.setHeader('X-Taranis-Scan-State', row.scan_state);
+    res.setHeader('Content-Type', row.content_type || 'application/octet-stream');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${contentDispositionFilename(row.filename)}"`
+    );
+    if (object.contentLength != null) res.setHeader('Content-Length', object.contentLength);
+
+    object.body.on('error', (streamErr) => {
+      console.error('[company] Form download stream error:', streamErr.message);
+      res.destroy(streamErr);
+    });
+    object.body.pipe(res);
+  } catch (err) {
+    console.error('[company] Form download error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
