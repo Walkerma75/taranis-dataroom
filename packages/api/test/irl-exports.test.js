@@ -31,7 +31,7 @@ const ITEMS = [
     section: '1. Corporate & Structure', ref: '1.2',
     description: 'Group structure chart', priority: 'high',
     state: 'held', already_held: 'Chart dated March 2026',
-    source_document: 'AdrenoMed pack, tab 3', note_for_company: null,
+    source_document: 'Company pack, tab 3', note_for_company: null,
   },
   {
     section: '4. Financial', ref: '4.1',

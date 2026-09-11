@@ -127,7 +127,7 @@ test('an admin can seed, and the response reports the counts', async (t) => {
   assert.equal(res.body.skipped, 0);
   assert.equal(res.body.templateId, 'template-1');
   assert.equal(res.body.fund.slug, 'biotech-ksa');
-  assert.equal(res.body.source, 'Biotech_KSA_IRL_Master_Seed_v1_06Aug2026.xlsx');
+  assert.equal(res.body.source, 'Biotech_KSA_IRL_Master_Seed_v1.1_11Sep2026.xlsx');
   assert.match(res.body.message, /146 items/);
 });
 
@@ -414,7 +414,7 @@ test('a successful seed writes one audit row carrying the counts', async (t) => 
   assert.equal(parsed.total, 146);
   assert.equal(parsed.created, 146);
   assert.equal(parsed.seed, 'biotech-ksa-irl-v1');
-  assert.equal(parsed.source, 'Biotech_KSA_IRL_Master_Seed_v1_06Aug2026.xlsx');
+  assert.equal(parsed.source, 'Biotech_KSA_IRL_Master_Seed_v1.1_11Sep2026.xlsx');
 
   // The audit table itself is untouched: one plain INSERT through logAudit and
   // nothing else. Its triggers and retention are a DFSA commitment.

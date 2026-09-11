@@ -3,7 +3,7 @@
  *
  * Phase 1a moved files company to Taranis only. This is the other direction: a
  * document Taranis publishes into one company's workspace, read-only. The first
- * one is the AdrenoMed PRE-FILLED information request pack (HANDOVER-C005 §3.5).
+ * one is the pilot company's PRE-FILLED information request pack (HANDOVER-C005 §3.5).
  *
  * ---------------------------------------------------------------------------
  * WHY SHARED FILES ARE SCANNED, EVEN THOUGH THEY COME FROM TARANIS

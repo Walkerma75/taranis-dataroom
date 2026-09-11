@@ -26,7 +26,9 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { pool } from '../db.js';
-import { findUnsafeRowText, describeUnsafe } from '../services/company-visible-text.js';
+import {
+  findUnsafeRowText, findUnsafeMasterRowText, describeUnsafe,
+} from '../services/company-visible-text.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const SEEDS_DIR = path.join(__dirname, 'seeds');
@@ -108,6 +110,16 @@ export function validateIrlSeed(seed) {
     }
     if (!Number.isInteger(item.sort_order)) {
       problems.push(`ref ${item.ref}: sort_order is not an integer`);
+    }
+    // Every item says whether advisers may see its files. An artefact built
+    // before the column existed is refused rather than imported as "nothing
+    // restricted" (HANDOVER-CW028 §3.2).
+    if (typeof item.adviser_restricted !== 'boolean') {
+      problems.push(`ref ${item.ref}: adviser_restricted must be true or false`);
+    }
+    // Master text must never name a particular company or programme (CW028 §3.8).
+    for (const hit of findUnsafeMasterRowText(item)) {
+      problems.push(describeUnsafe(hit));
     }
 
     // A master sheet carrying a CASS score or an internal source must not reach
@@ -192,25 +204,28 @@ export async function importIrlTemplate({
     const { rows: [row] } = await client.query(
       `INSERT INTO irl_template_items
          (template_id, section, ref, description, priority, sort_order,
-          already_held, note_for_company)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          already_held, note_for_company, adviser_restricted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (template_id, ref) DO UPDATE
          SET section = EXCLUDED.section,
              description = EXCLUDED.description,
              priority = EXCLUDED.priority,
              sort_order = EXCLUDED.sort_order,
              already_held = EXCLUDED.already_held,
-             note_for_company = EXCLUDED.note_for_company
-         WHERE irl_template_items.section          IS DISTINCT FROM EXCLUDED.section
-            OR irl_template_items.description      IS DISTINCT FROM EXCLUDED.description
-            OR irl_template_items.priority         IS DISTINCT FROM EXCLUDED.priority
-            OR irl_template_items.sort_order       IS DISTINCT FROM EXCLUDED.sort_order
-            OR irl_template_items.already_held     IS DISTINCT FROM EXCLUDED.already_held
-            OR irl_template_items.note_for_company IS DISTINCT FROM EXCLUDED.note_for_company
+             note_for_company = EXCLUDED.note_for_company,
+             adviser_restricted = EXCLUDED.adviser_restricted
+         WHERE irl_template_items.section            IS DISTINCT FROM EXCLUDED.section
+            OR irl_template_items.description        IS DISTINCT FROM EXCLUDED.description
+            OR irl_template_items.priority           IS DISTINCT FROM EXCLUDED.priority
+            OR irl_template_items.sort_order         IS DISTINCT FROM EXCLUDED.sort_order
+            OR irl_template_items.already_held       IS DISTINCT FROM EXCLUDED.already_held
+            OR irl_template_items.note_for_company   IS DISTINCT FROM EXCLUDED.note_for_company
+            OR irl_template_items.adviser_restricted IS DISTINCT FROM EXCLUDED.adviser_restricted
        RETURNING (xmax = 0) AS was_insert`,
       [
         template.id, item.section, item.ref, item.description, item.priority,
         item.sort_order, item.already_held, item.note_for_company,
+        item.adviser_restricted === true,
       ]
     );
     // No row back means the conflict target matched and the WHERE was false:

@@ -270,7 +270,7 @@ export async function suppress({ email, reason, detail = null }, client) {
  * recorded as an outbox row with status 'suppressed' and nothing else — no
  * banner, no notice, nothing in any screen. An administrator who resends an
  * invitation therefore sees a success message for a message that was never
- * going to leave, which is exactly what happened to AdrenoMed: two invitations
+ * going to leave, which is exactly what happened to the pilot company: two invitations
  * queued, neither delivered, and no way to find that out short of reaching a
  * database that sits in a private subnet (HANDOVER-CW015 §2A).
  *

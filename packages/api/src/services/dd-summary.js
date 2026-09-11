@@ -48,7 +48,7 @@
  * and it is the difference between an alert and a nuisance. An outstanding item
  * has no "asked on" date: its only timestamps are `created_at`, stamped when
  * activation seeded the whole checklist in one go, and `updated_at`. Ageing
- * from those would have put every one of AdrenoMed's ~140 untouched items past
+ * from those would have put every one of the pilot company's ~140 untouched items past
  * the 7-day red threshold on the day this shipped, and left the tile red for
  * ever. So the red flag here means one thing only: we asked this company a
  * specific question, in writing, on a date, and have heard nothing back.
