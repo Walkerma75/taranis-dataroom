@@ -49,6 +49,26 @@ import {
   sessionDigestsEnabled,
 } from '../services/notification-digests.js';
 import { isStatement, statementFields } from '../services/company-statements.js';
+import {
+  resolveCompanyAccess,
+  companyVisibilitySql,
+  isAdminAccess,
+  itemInScope,
+  adviserSafeItem,
+  fileIsRestricted,
+  fileVisibleToGrant,
+  canWriteAtLevel,
+  GRANTABLE_ROLES,
+  GRANT_LEVELS,
+  OVERRIDES,
+  ATTESTATION_VERSION,
+  attestationSentences,
+  normaliseSections,
+  parseExpiry,
+  requireAttestations,
+  isExpired,
+  GrantInputError,
+} from '../services/adviser-access.js';
 
 /**
  * What a response row reports instead of a scan-based download decision. There
@@ -124,12 +144,80 @@ const publishUpload = multer({
   },
 });
 
-/** Companies the caller can see at all: everything for an admin, assignments otherwise. */
+/**
+ * Companies the caller can see at all: everything for an admin; otherwise a
+ * live, unexpired grant with two-step verification enrolled. One definition,
+ * in services/adviser-access.js, shared with the review queue.
+ */
 function visibilityClause(user, params) {
-  if (user.role === 'admin') return '';
-  params.push(user.sub);
-  return `AND EXISTS (SELECT 1 FROM company_reviewers r
-                       WHERE r.company_id = c.id AND r.user_id = $${params.length})`;
+  return companyVisibilitySql(user, params);
+}
+
+/**
+ * The live grants of a non-admin, keyed by company id, for lists that span
+ * companies (the review queue). A person may hold grants on several companies
+ * with different sections, so the per-file rule is applied row by row.
+ */
+async function liveGrantsByCompany(user) {
+  if (user.role === 'admin') return null;
+  const { rows } = await pool.query(
+    `SELECT r.company_id, r.id, r.level, r.sections, r.expires_at,
+            COALESCE(m.totp_verified, FALSE) AS totp_verified
+     FROM company_reviewers r
+     LEFT JOIN user_mfa m ON m.user_id = r.user_id
+     WHERE r.user_id = $1 AND (r.expires_at IS NULL OR r.expires_at > NOW())`,
+    [user.sub]
+  );
+  const map = new Map();
+  for (const r of rows) {
+    if (!r.totp_verified) continue;
+    map.set(r.company_id, { level: r.level, grantId: r.id, sections: r.sections || null, expiresAt: r.expires_at });
+  }
+  return map;
+}
+
+/** The Taranis-facing shape of a grant row. */
+function grantView(row, { downloads = null } = {}) {
+  const expiresAt = row.expires_at || null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    displayName: row.display_name || null,
+    email: row.email || null,
+    role: row.role || null,
+    level: row.level,
+    sections: row.sections || null,
+    expiresAt,
+    expired: isExpired({ expiresAt }),
+    needsEndDate: !expiresAt,
+    grantedBy: row.assigned_by_name || null,
+    grantedAt: row.created_at,
+    updatedAt: row.updated_at || null,
+    updatedBy: row.updated_by_name || null,
+    attestedBy: row.attested_by_name || null,
+    attestedAt: row.attested_at || null,
+    attestationVersion: row.attestation_version || null,
+    ...(downloads ? { downloads } : {}),
+  };
+}
+
+const GRANT_SELECT = `
+  SELECT r.*, u.display_name, u.email, u.role,
+         a.display_name AS assigned_by_name,
+         at.display_name AS attested_by_name,
+         up.display_name AS updated_by_name
+  FROM company_reviewers r
+  JOIN users u ON u.id = r.user_id
+  JOIN users a ON a.id = r.assigned_by
+  LEFT JOIN users at ON at.id = r.attested_by
+  LEFT JOIN users up ON up.id = r.updated_by`;
+
+function grantInputError(res, err) {
+  if (err instanceof GrantInputError) {
+    res.status(400).json({ error: err.message });
+    return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,9 +269,20 @@ router.get('/', async (req, res) => {
   }
   const visibility = visibilityClause(req.user, params);
 
+  // A non-admin's level on each company, so the nav can tell a read-only
+  // grant from a reviewer one without a request per company (CW028 §3.5).
+  let accessLevelSelect = `'admin' AS access_level`;
+  if (req.user.role !== 'admin') {
+    params.push(req.user.sub);
+    accessLevelSelect = `(SELECT r.level FROM company_reviewers r
+                            WHERE r.company_id = c.id AND r.user_id = $${params.length}
+                              AND (r.expires_at IS NULL OR r.expires_at > NOW())
+                            LIMIT 1) AS access_level`;
+  }
+
   try {
     const { rows } = await pool.query(
-      `SELECT c.*, f.name AS fund_name,
+      `SELECT c.*, f.name AS fund_name, ${accessLevelSelect},
               (SELECT COUNT(*) FROM company_irl_items i WHERE i.company_id = c.id) AS item_count,
               (SELECT COUNT(*) FROM company_irl_items i
                 WHERE i.company_id = c.id AND i.state = 'completed')          AS completed_count,
@@ -218,6 +317,7 @@ router.get('/', async (req, res) => {
       awaitingReview: Number(c.awaiting_review),
       lastActivity: c.last_activity,
       activatedAt: c.activated_at,
+      accessLevel: c.access_level,
     })));
   } catch (err) {
     console.error('[companies] List error:', err);
@@ -326,6 +426,13 @@ router.get('/:id', requireCompanyAccess(), async (req, res) => {
       createdBy: company.created_by_name,
       createdAt: company.created_at,
       accessLevel: req.accessLevel,
+      // The grant behind that level, so the page can show its scope and end
+      // date. Admins carry no scope and no expiry.
+      access: {
+        level: req.access.level,
+        sections: req.access.sections,
+        expiresAt: req.access.expiresAt,
+      },
       progress: summariseProgress(items),
     });
   } catch (err) {
@@ -337,7 +444,9 @@ router.get('/:id', requireCompanyAccess(), async (req, res) => {
 // ---------------------------------------------------------------------------
 // PATCH /companies/:id — metadata and the two gates
 // ---------------------------------------------------------------------------
-router.patch('/:id', requireCompanyAccess({ write: true }), async (req, res) => {
+// Admin only since HANDOVER-CW028 (C028 §2.1): this body carries the NDA and
+// IEMS activation gates, which a reviewer-level grant must not be able to set.
+router.patch('/:id', requireRole('admin'), async (req, res) => {
   const {
     legalName, jurisdiction, emailDomains,
     ndaExecutedAt, iemsScreenedAt, iemsReference, ndaCheckConfirmed,
@@ -577,7 +686,8 @@ router.post('/:id/offboard', requireRole('admin'), (req, res) =>
 // ---------------------------------------------------------------------------
 
 // GET /companies/:id/users — the access review listing
-router.get('/:id/users', requireCompanyAccess(), async (req, res) => {
+// Admin only since HANDOVER-CW028 §3.5: an adviser never sees the company's user list.
+router.get('/:id/users', requireRole('admin'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT cu.*, u.display_name, u.email, u.status AS account_status,
@@ -902,66 +1012,294 @@ router.patch('/:id/users/:userId', requireRole('admin'), async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Reviewer assignment
+// Access: named adviser grants on one company (HANDOVER-CW028 §3.4)
+//
+// Admins only, all of it. A grant names an active advisor or viewer (never an
+// investor, never a company user), a level, the sections it covers, the date
+// it ends, and the two confirmations that make it proper to give. Every
+// create, edit and remove is audited with before and after.
 // ---------------------------------------------------------------------------
-router.post('/:id/reviewers', requireRole('admin'), async (req, res) => {
-  const { userId, level } = req.body;
-  if (!userId || !['reviewer', 'readonly'].includes(level)) {
-    return res.status(400).json({ error: 'A user and a level of reviewer or readonly are required' });
-  }
 
+/** Downloads by each grant holder on this company, from the audit log. */
+async function downloadSummaries(companyId, userIds) {
+  if (!userIds.length) return new Map();
+  const { rows } = await pool.query(
+    `SELECT user_id, COUNT(*) AS downloads, MAX(created_at) AS last_download
+     FROM audit_log
+     WHERE action = 'company_file.downloaded'
+       AND detail->>'companyId' = $1
+       AND user_id = ANY($2::uuid[])
+     GROUP BY user_id`,
+    [companyId, userIds]
+  );
+  return new Map(rows.map((r) => [r.user_id, { count: Number(r.downloads), last: r.last_download }]));
+}
+
+router.get('/:id/access', requireRole('admin'), async (req, res) => {
   try {
-    const { rows: [target] } = await pool.query(`SELECT role FROM users WHERE id = $1`, [userId]);
-    if (!target) return res.status(404).json({ error: 'User not found' });
-    // A company user must never be assignable as a Taranis-side reviewer.
-    if (target.role === 'company') {
-      return res.status(400).json({ error: 'Company users cannot be assigned as reviewers' });
-    }
-
-    const { rows: [row] } = await pool.query(
-      `INSERT INTO company_reviewers (company_id, user_id, level, assigned_by)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (company_id, user_id) DO UPDATE SET level = EXCLUDED.level
-       RETURNING *`,
-      [req.params.id, userId, level, req.user.sub]
+    const { rows } = await pool.query(
+      `${GRANT_SELECT} WHERE r.company_id = $1 ORDER BY r.created_at DESC`,
+      [req.params.id]
     );
-
-    await logAudit({
-      action: 'company.updated',
-      userId: req.user.sub,
-      resource: 'company',
-      resourceId: req.params.id,
-      detail: { reviewerAssigned: userId, level },
-      ip: req.ip,
-    });
-
-    res.status(201).json(row);
+    const downloads = await downloadSummaries(req.params.id, rows.map((r) => r.user_id));
+    res.json(rows.map((r) => grantView(r, { downloads: downloads.get(r.user_id) || { count: 0, last: null } })));
   } catch (err) {
-    console.error('[companies] Assign reviewer error:', err);
+    console.error('[companies] Access list error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-router.delete('/:id/reviewers/:userId', requireRole('admin'), async (req, res) => {
+/** The full list of what one grant holder has opened on this company. */
+router.get('/:id/access/:grantId/downloads', requireRole('admin'), async (req, res) => {
   try {
-    const { rowCount } = await pool.query(
-      `DELETE FROM company_reviewers WHERE company_id = $1 AND user_id = $2`,
-      [req.params.id, req.params.userId]
+    const { rows: [grant] } = await pool.query(
+      `SELECT user_id FROM company_reviewers WHERE id = $1 AND company_id = $2`,
+      [req.params.grantId, req.params.id]
     );
-    if (!rowCount) return res.status(404).json({ error: 'Assignment not found' });
+    if (!grant) return res.status(404).json({ error: 'Grant not found' });
+
+    const { rows } = await pool.query(
+      `SELECT al.created_at, al.resource_id AS file_id, al.detail
+       FROM audit_log al
+       WHERE al.action = 'company_file.downloaded'
+         AND al.user_id = $1 AND al.detail->>'companyId' = $2
+       ORDER BY al.created_at DESC
+       LIMIT 500`,
+      [grant.user_id, req.params.id]
+    );
+    res.json(rows.map((r) => ({
+      at: r.created_at,
+      fileId: r.file_id,
+      filename: r.detail?.filename || null,
+      accessLevel: r.detail?.accessLevel || null,
+    })));
+  } catch (err) {
+    console.error('[companies] Access downloads error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * The person picker: active advisors and viewers, with whether each holds a
+ * fund grant on this company's fund (a warning, never a block: CW028 §3.4).
+ */
+router.get('/:id/access/candidates', requireRole('admin'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.display_name, u.email, u.role,
+              COALESCE(m.totp_verified, FALSE) AS mfa_enabled,
+              EXISTS (SELECT 1 FROM grants g JOIN companies c ON c.id = $1
+                       WHERE g.user_id = u.id AND g.fund_id = c.fund_id AND g.revoked_at IS NULL) AS has_fund_grant
+       FROM users u
+       LEFT JOIN user_mfa m ON m.user_id = u.id
+       WHERE u.status = 'active' AND u.role = ANY($2::user_role[])
+       ORDER BY u.display_name`,
+      [req.params.id, GRANTABLE_ROLES]
+    );
+    res.json(rows.map((u) => ({
+      id: u.id, displayName: u.display_name, email: u.email, role: u.role,
+      mfaEnabled: u.mfa_enabled, hasFundGrant: u.has_fund_grant,
+    })));
+  } catch (err) {
+    console.error('[companies] Access candidates error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.post('/:id/access', requireRole('admin'), async (req, res) => {
+  const { userId, level, sections: rawSections, accessUntil, attestations } = req.body || {};
+  if (!userId || !GRANT_LEVELS.includes(level)) {
+    return res.status(400).json({ error: 'A user and a level of reviewer or readonly are required' });
+  }
+
+  let sections;
+  let expiresAt;
+  try {
+    sections = normaliseSections(rawSections);
+    expiresAt = parseExpiry(accessUntil, { required: true });
+    requireAttestations(attestations);
+  } catch (err) {
+    if (grantInputError(res, err)) return;
+    throw err;
+  }
+
+  try {
+    const { rows: [target] } = await pool.query(
+      `SELECT id, display_name, role, status FROM users WHERE id = $1`, [userId]
+    );
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    // Company users never; investors never. Only the two roles that already
+    // sign in for fund information can be given a company (CW028 §3.4).
+    if (!GRANTABLE_ROLES.includes(target.role)) {
+      return res.status(400).json({
+        error: `Only an advisor or a viewer can be given access to a company; this account is ${target.role}.`,
+      });
+    }
+    if (target.status !== 'active') {
+      return res.status(400).json({ error: 'Only an active account can be given access' });
+    }
+
+    const { rows: [company] } = await pool.query(
+      `SELECT id, legal_name, fund_id FROM companies WHERE id = $1`, [req.params.id]
+    );
+    if (!company) return res.status(404).json({ error: 'Company not found' });
+
+    // Validate the sections against this company's own items, so a grant
+    // cannot name a section the company does not have.
+    if (sections) {
+      const { rows: known } = await pool.query(
+        `SELECT DISTINCT section FROM company_irl_items WHERE company_id = $1`, [company.id]
+      );
+      const labels = new Set(known.map((k) => k.section));
+      const unknown = sections.filter((sct) => !labels.has(sct));
+      if (unknown.length) {
+        return res.status(400).json({ error: `Unknown section(s) for this company: ${unknown.join('; ')}` });
+      }
+    }
+
+    const { rows: [existing] } = await pool.query(
+      `SELECT * FROM company_reviewers WHERE company_id = $1 AND user_id = $2`,
+      [company.id, userId]
+    );
+
+    const { rows: [row] } = await pool.query(
+      `INSERT INTO company_reviewers
+         (company_id, user_id, level, sections, expires_at, assigned_by,
+          attested_by, attested_at, attestation_version, updated_by, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $6, NOW(), $7, $6, NOW())
+       ON CONFLICT (company_id, user_id) DO UPDATE
+         SET level = EXCLUDED.level, sections = EXCLUDED.sections, expires_at = EXCLUDED.expires_at,
+             attested_by = EXCLUDED.attested_by, attested_at = EXCLUDED.attested_at,
+             attestation_version = EXCLUDED.attestation_version,
+             updated_by = EXCLUDED.updated_by, updated_at = NOW()
+       RETURNING *`,
+      [company.id, userId, level, sections, expiresAt, req.user.sub, ATTESTATION_VERSION]
+    );
+
+    const { rows: [fundGrant] } = await pool.query(
+      `SELECT 1 FROM grants WHERE user_id = $1 AND fund_id = $2 AND revoked_at IS NULL LIMIT 1`,
+      [userId, company.fund_id]
+    );
 
     await logAudit({
-      action: 'company.updated',
+      action: existing ? 'company_grant.updated' : 'company_grant.created',
       userId: req.user.sub,
-      resource: 'company',
-      resourceId: req.params.id,
-      detail: { reviewerRemoved: req.params.userId },
+      resource: 'company_grant',
+      resourceId: row.id,
+      detail: {
+        companyId: company.id,
+        userId,
+        before: existing ? {
+          level: existing.level, sections: existing.sections, expiresAt: existing.expires_at,
+        } : null,
+        after: { level, sections, expiresAt },
+        attestations: {
+          version: ATTESTATION_VERSION,
+          sentences: attestationSentences({ personName: target.display_name, companyName: company.legal_name }),
+        },
+      },
       ip: req.ip,
     });
 
-    res.json({ message: 'Assignment removed' });
+    res.status(201).json({
+      ...grantView({ ...row, display_name: target.display_name, role: target.role, assigned_by_name: req.user.name }),
+      message: existing ? 'Access updated.' : 'Access given.',
+      ...(fundGrant ? {} : {
+        warning: `${target.display_name} holds no document access on this company's fund. `
+               + 'They can still see the company; check that is intended.',
+      }),
+    });
   } catch (err) {
-    console.error('[companies] Remove reviewer error:', err);
+    console.error('[companies] Give access error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.patch('/:id/access/:grantId', requireRole('admin'), async (req, res) => {
+  const { level, sections: rawSections, accessUntil } = req.body || {};
+  if (level !== undefined && !GRANT_LEVELS.includes(level)) {
+    return res.status(400).json({ error: 'level must be reviewer or readonly' });
+  }
+
+  let sections;
+  let expiresAt;
+  try {
+    if (rawSections !== undefined) sections = normaliseSections(rawSections);
+    if (accessUntil !== undefined) expiresAt = parseExpiry(accessUntil, { required: true });
+  } catch (err) {
+    if (grantInputError(res, err)) return;
+    throw err;
+  }
+  if (level === undefined && rawSections === undefined && accessUntil === undefined) {
+    return res.status(400).json({ error: 'Nothing to update' });
+  }
+
+  try {
+    const { rows: [existing] } = await pool.query(
+      `SELECT * FROM company_reviewers WHERE id = $1 AND company_id = $2`,
+      [req.params.grantId, req.params.id]
+    );
+    if (!existing) return res.status(404).json({ error: 'Grant not found' });
+
+    const sets = ['updated_at = NOW()'];
+    const params = [existing.id];
+    const add = (col, value) => { params.push(value); sets.push(`${col} = $${params.length}`); };
+    if (level !== undefined) add('level', level);
+    if (rawSections !== undefined) add('sections', sections);
+    if (accessUntil !== undefined) add('expires_at', expiresAt);
+    add('updated_by', req.user.sub);
+
+    const { rows: [row] } = await pool.query(
+      `UPDATE company_reviewers SET ${sets.join(', ')} WHERE id = $1 RETURNING *`, params
+    );
+
+    await logAudit({
+      action: 'company_grant.updated',
+      userId: req.user.sub,
+      resource: 'company_grant',
+      resourceId: row.id,
+      detail: {
+        companyId: req.params.id,
+        userId: row.user_id,
+        before: { level: existing.level, sections: existing.sections, expiresAt: existing.expires_at },
+        after: { level: row.level, sections: row.sections, expiresAt: row.expires_at },
+      },
+      ip: req.ip,
+    });
+
+    const { rows: [full] } = await pool.query(`${GRANT_SELECT} WHERE r.id = $1`, [row.id]);
+    res.json(grantView(full || row));
+  } catch (err) {
+    console.error('[companies] Edit access error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.delete('/:id/access/:grantId', requireRole('admin'), async (req, res) => {
+  try {
+    const { rows: [existing] } = await pool.query(
+      `DELETE FROM company_reviewers WHERE id = $1 AND company_id = $2 RETURNING *`,
+      [req.params.grantId, req.params.id]
+    );
+    if (!existing) return res.status(404).json({ error: 'Grant not found' });
+
+    await logAudit({
+      action: 'company_grant.removed',
+      userId: req.user.sub,
+      resource: 'company_grant',
+      resourceId: existing.id,
+      detail: {
+        companyId: req.params.id,
+        userId: existing.user_id,
+        before: { level: existing.level, sections: existing.sections, expiresAt: existing.expires_at },
+        after: null,
+      },
+      ip: req.ip,
+    });
+
+    res.json({ message: 'Access removed. The record of what they opened is kept.' });
+  } catch (err) {
+    console.error('[companies] Remove access error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -988,7 +1326,13 @@ router.get('/:id/irl-items', requireCompanyAccess(), async (req, res) => {
        FROM company_irl_items i WHERE i.company_id = $1 ORDER BY i.sort_order`,
       [req.params.id]
     );
-    res.json(rows.map((i) => ({ ...i, submitted_files: Number(i.submitted_files) })));
+    const shaped = rows.map((i) => ({ ...i, submitted_files: Number(i.submitted_files) }));
+    if (isAdminAccess(req.access)) return res.json(shaped);
+
+    // An adviser sees the items in their scope, without the Taranis-side
+    // fields, and a restricted item in scope shows with its flag and no files
+    // so its absence is not mistaken for a gap (HANDOVER-CW028 §3.5).
+    res.json(shaped.filter((i) => itemInScope(req.access, i)).map(adviserSafeItem));
   } catch (err) {
     console.error('[companies] IRL items error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1084,7 +1428,9 @@ function rejectUnsafeCompanyText(req, res) {
 }
 
 // Ad hoc item, or a template addition pushed to one company.
-router.post('/:id/irl-items', requireCompanyAccess({ write: true }), async (req, res) => {
+// Admin only since HANDOVER-CW028 (C028 §2.1): adding to a company's checklist
+// is a Taranis decision, not something a reviewer-level grant carries.
+router.post('/:id/irl-items', requireRole('admin'), async (req, res) => {
   const { section, ref, description, priority, noteForCompany } = req.body;
   if (!section || !ref || !description) {
     return res.status(400).json({ error: 'A section, a ref and a description are required' });
@@ -1155,11 +1501,36 @@ router.post('/:id/irl-items', requireCompanyAccess({ write: true }), async (req,
 });
 
 router.patch('/:id/irl-items/:itemId', requireCompanyAccess({ write: true }), async (req, res) => {
-  const { description, priority, state, noteForCompany, internalNote, alreadyHeld, sourceDocument } = req.body;
+  const {
+    description, priority, state, noteForCompany, internalNote, alreadyHeld, sourceDocument,
+    adviserRestricted,
+  } = req.body;
   // `alreadyHeld` is the GAPS sheet's "We already hold" column and is the field
   // the KardiaNova wording sat in; `noteForCompany` reaches the portal and email
   // as well. Both are refused before any column is set.
   if (rejectUnsafeCompanyText(req, res)) return;
+
+  // The restriction flag is the line no grant crosses, so only an admin moves
+  // it, and a reviewer-level grant may only touch items it can see: in scope
+  // and not restricted. Out of scope is 404, as everywhere (CW028 §3.3, §3.5).
+  if (adviserRestricted !== undefined && !isAdminAccess(req.access)) {
+    return res.status(403).json({ error: 'Only an administrator can change whether advisers may see an item' });
+  }
+  if (adviserRestricted !== undefined && typeof adviserRestricted !== 'boolean') {
+    return res.status(400).json({ error: 'adviserRestricted must be true or false' });
+  }
+  let previousRestriction = null;
+  if (!isAdminAccess(req.access) || adviserRestricted !== undefined) {
+    const { rows: [current] } = await pool.query(
+      `SELECT id, ref, section, adviser_restricted FROM company_irl_items WHERE id = $1 AND company_id = $2`,
+      [req.params.itemId, req.params.id]
+    );
+    if (!current) return res.status(404).json({ error: 'Item not found' });
+    if (!isAdminAccess(req.access) && (!itemInScope(req.access, current) || current.adviser_restricted)) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    previousRestriction = current.adviser_restricted;
+  }
 
   const sets = [];
   const params = [req.params.itemId, req.params.id];
@@ -1185,6 +1556,7 @@ router.patch('/:id/irl-items/:itemId', requireCompanyAccess({ write: true }), as
   if (internalNote !== undefined) add('internal_note', internalNote || null);
   if (alreadyHeld !== undefined) add('already_held', alreadyHeld || null);
   if (sourceDocument !== undefined) add('source_document', sourceDocument || null);
+  if (adviserRestricted !== undefined) add('adviser_restricted', adviserRestricted);
 
   if (sets.length === 0) return res.status(400).json({ error: 'Nothing to update' });
   sets.push('updated_at = NOW()');
@@ -1205,8 +1577,18 @@ router.patch('/:id/irl-items/:itemId', requireCompanyAccess({ write: true }), as
       detail: { itemRef: item.ref, fields: sets.length - 1 },
       ip: req.ip,
     });
+    if (adviserRestricted !== undefined && adviserRestricted !== previousRestriction) {
+      await logAudit({
+        action: 'irl_item.restriction_changed',
+        userId: req.user.sub,
+        resource: 'company_irl_item',
+        resourceId: item.id,
+        detail: { companyId: req.params.id, itemRef: item.ref, before: previousRestriction, after: adviserRestricted },
+        ip: req.ip,
+      });
+    }
 
-    res.json(item);
+    res.json(isAdminAccess(req.access) ? item : adviserSafeItem(item));
   } catch (err) {
     console.error('[companies] Update item error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1234,20 +1616,29 @@ router.get('/:id/files', requireCompanyAccess(), async (req, res) => {
     const { rows } = await pool.query(
       `SELECT f.*, u.display_name AS uploaded_by_name,
               i.ref AS item_ref, i.section AS item_section,
+              i.adviser_restricted AS item_restricted,
               b.receipt_ref, b.submitted_at,
-              ri.ref AS related_item_ref
+              ri.ref AS related_item_ref,
+              ob.display_name AS adviser_override_by_name
        FROM company_files f
        JOIN users u ON u.id = f.uploaded_by
        LEFT JOIN company_irl_items i ON i.id = f.irl_item_id
        LEFT JOIN submission_batches b ON b.id = f.batch_id
        LEFT JOIN company_irl_items ri ON ri.id = f.related_item_id AND ri.company_id = f.company_id
+       LEFT JOIN users ob ON ob.id = f.adviser_override_by
        WHERE f.company_id = $1 AND f.deleted_at IS NULL
          AND f.upload_state = 'submitted'
        ORDER BY b.submitted_at DESC NULLS LAST, f.created_at DESC`,
       [req.params.id]
     );
 
-    res.json(rows.map((f) => {
+    // The same per-file rule as the download and the history, applied row by
+    // row: an adviser sees in-scope, unrestricted, submitted files and nothing
+    // else (HANDOVER-CW028 §3.5). Admins see every row, with the restriction
+    // state on it so the lock chip and the override controls can be drawn.
+    const visible = rows.filter((f) => fileVisibleToGrant(req.access, f));
+
+    res.json(visible.map((f) => {
       // A response has no bytes: never downloadable, never scanned.
       const decision = isStatement(f) ? NO_FILE : downloadDecision(f.scan_state);
       return {
@@ -1271,6 +1662,16 @@ router.get('/:id/files', requireCompanyAccess(), async (req, res) => {
         submittedAt: f.submitted_at,
         uploadedBy: f.uploaded_by_name,
         uploadedAt: f.created_at,
+        adviserRestricted: fileIsRestricted({
+          adviserOverride: f.adviser_override, irlItemId: f.irl_item_id, itemRestricted: f.item_restricted,
+        }),
+        ...(isAdminAccess(req.access) ? {
+          itemRestricted: !!f.item_restricted,
+          adviserOverride: f.adviser_override,
+          adviserOverrideReason: f.adviser_override_reason || null,
+          adviserOverrideBy: f.adviser_override_by_name || null,
+          adviserOverrideAt: f.adviser_override_at || null,
+        } : {}),
       };
     }));
   } catch (err) {
@@ -1302,9 +1703,12 @@ router.get('/:id/files', requireCompanyAccess(), async (req, res) => {
  * optional context. The file is scanned before the bytes reach the bucket, for
  * the reasons written into services/company-shared.js.
  */
+// Admin only since HANDOVER-CW028 §3.5: shared documents are addressed to the
+// company and an adviser never sees that tab. The four routes below were
+// reviewer-level before; the ACCESS LEVEL note above records the old reasoning.
 router.post(
   '/:id/shared-files',
-  requireCompanyAccess({ write: true }),
+  requireRole('admin'),
   publishUpload.single('file'),
   async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'A file is required' });
@@ -1416,7 +1820,7 @@ router.post(
  * withdrawn rows included. The Taranis side sees the whole history; the company
  * sees only what is live.
  */
-router.get('/:id/shared-files', requireCompanyAccess(), async (req, res) => {
+router.get('/:id/shared-files', requireRole('admin'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT s.*, p.display_name AS published_by_name, w.display_name AS withdrawn_by_name
@@ -1445,7 +1849,7 @@ router.get('/:id/shared-files', requireCompanyAccess(), async (req, res) => {
  */
 router.post(
   '/:id/shared-files/:sharedId/withdraw',
-  requireCompanyAccess({ write: true }),
+  requireRole('admin'),
   async (req, res) => {
     const { reason } = req.body || {};
 
@@ -1500,7 +1904,7 @@ router.post(
  * question "what exactly did they get?" is answerable from the portal rather
  * than from somebody's Sent items.
  */
-router.get('/:id/shared-files/:sharedId/download', requireCompanyAccess(), async (req, res) => {
+router.get('/:id/shared-files/:sharedId/download', requireRole('admin'), async (req, res) => {
   try {
     const { rows: [row] } = await pool.query(
       `SELECT * FROM company_shared_files WHERE id = $1 AND company_id = $2`,
@@ -1565,7 +1969,9 @@ router.get('/:id/shared-files/:sharedId/download', requireCompanyAccess(), async
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
-router.get('/:id/export', requireCompanyAccess(), async (req, res) => {
+// Admin only since HANDOVER-CW028 §3.5: PRE-FILLED carries source documents and
+// the whole checklist regardless of scope or restriction.
+router.get('/:id/export', requireRole('admin'), async (req, res) => {
   const format = (req.query.format || 'prefilled').toLowerCase();
   if (!['prefilled', 'gaps'].includes(format)) {
     return res.status(400).json({ error: 'format must be prefilled or gaps' });
@@ -1700,8 +2106,10 @@ reviewQueueRouter.get('/', async (req, res) => {
       `SELECT f.id, f.filename, f.description, f.size_bytes, f.scan_state,
               f.scan_backend, f.created_at, f.status, f.irl_item_id,
               f.kind, f.statement_reason, f.expected_date, f.related_item_id,
+              f.upload_state, f.adviser_override,
               c.id AS company_id, c.legal_name,
               i.ref AS item_ref, i.section AS item_section,
+              i.adviser_restricted AS item_restricted,
               b.receipt_ref, b.submitted_at,
               ri.ref AS related_item_ref
        FROM company_files f
@@ -1714,11 +2122,19 @@ reviewQueueRouter.get('/', async (req, res) => {
       params
     );
 
+    // A non-admin's rows pass the same per-file rule as the Files tab, against
+    // the grant for THAT row's company: scopes differ per company, so this is
+    // done per row rather than in SQL (HANDOVER-CW028 §3.5).
+    const grants = await liveGrantsByCompany(req.user);
+    const visible = grants
+      ? rows.filter((f) => fileVisibleToGrant(grants.get(f.company_id), f))
+      : rows;
+
     // Same server-published download decision as the Files tab, for the same
     // reason: this is the other screen a reviewer opens a file from, and the two
     // must never disagree about what is downloadable. A response has nothing to
     // download (CW026 §3.3).
-    res.json(rows.map((f) => {
+    res.json(visible.map((f) => {
       const decision = isStatement(f) ? NO_FILE : downloadDecision(f.scan_state);
       return {
         id: f.id,
@@ -1741,6 +2157,9 @@ reviewQueueRouter.get('/', async (req, res) => {
         itemSection: f.item_section,
         receiptRef: f.receipt_ref,
         submittedAt: f.submitted_at,
+        adviserRestricted: fileIsRestricted({
+          adviserOverride: f.adviser_override, irlItemId: f.irl_item_id, itemRestricted: f.item_restricted,
+        }),
       };
     }));
   } catch (err) {
@@ -1885,8 +2304,11 @@ companyFilesRouter.use(requireAuth, rejectCompanyRole);
 /** Resolve the file, then apply the same company access rule as everything else. */
 async function loadFileForTaranis(req, res, { write }) {
   const { rows: [file] } = await pool.query(
-    `SELECT f.*, c.legal_name FROM company_files f
+    `SELECT f.*, c.legal_name,
+            i.adviser_restricted AS item_restricted, i.section AS item_section
+     FROM company_files f
      JOIN companies c ON c.id = f.company_id
+     LEFT JOIN company_irl_items i ON i.id = f.irl_item_id
      WHERE f.id = $1 AND f.deleted_at IS NULL`,
     [req.params.fileId]
   );
@@ -1895,20 +2317,100 @@ async function loadFileForTaranis(req, res, { write }) {
     return null;
   }
 
-  const { taranisAccessLevel, canWriteAtLevel } = await import('../services/companies.js');
-  const level = await taranisAccessLevel({
+  const access = await resolveCompanyAccess({
     userId: req.user.sub, role: req.user.role, companyId: file.company_id,
   });
-  if (!level) {
+  if (!access) {
     res.status(404).json({ error: 'File not found' });
     return null;
   }
-  if (write && !canWriteAtLevel(level)) {
+  if (access.mfaRequired) {
+    res.status(403).json({
+      error: 'Two-factor authentication must be set up before you can see company information.',
+      mfaEnrolmentRequired: true,
+    });
+    return null;
+  }
+  // Out of scope, restricted or not submitted: the same 404 as a file that
+  // does not exist (HANDOVER-CW028 §3.5), on status, history and download alike.
+  if (!fileVisibleToGrant(access, file)) {
+    res.status(404).json({ error: 'File not found' });
+    return null;
+  }
+  if (write && !canWriteAtLevel(access.level)) {
     res.status(403).json({ error: 'Your access to this company is read-only' });
     return null;
   }
+  req.access = access;
   return file;
 }
+
+/**
+ * PATCH /company-files/:fileId/adviser-access — the per-file override
+ *
+ * Admins only. 'restricted' hides a file under a standard item (a CV pack that
+ * turns out to hold passport scans); 'released' shows a file under a restricted
+ * item, or an Additional Document, and needs a reason; 'follow_item' puts the
+ * decision back with the item. Audited with before and after
+ * (HANDOVER-CW028 §3.3).
+ */
+companyFilesRouter.patch('/:fileId/adviser-access', requireRole('admin'), async (req, res) => {
+  const override = String(req.body?.override || '').trim();
+  const reason = String(req.body?.reason || '').trim();
+  if (!OVERRIDES.includes(override)) {
+    return res.status(400).json({ error: `override must be one of ${OVERRIDES.join(', ')}` });
+  }
+  if (override === 'released' && !reason) {
+    return res.status(400).json({ error: 'A reason is required to release a file to advisers' });
+  }
+
+  const file = await loadFileForTaranis(req, res, { write: true });
+  if (!file) return;
+
+  try {
+    const { rows: [updated] } = await pool.query(
+      `UPDATE company_files
+       SET adviser_override = $2, adviser_override_by = $3, adviser_override_at = NOW(),
+           adviser_override_reason = $4
+       WHERE id = $1 RETURNING *`,
+      [file.id, override, req.user.sub, reason || null]
+    );
+
+    const before = fileIsRestricted({
+      adviserOverride: file.adviser_override, irlItemId: file.irl_item_id, itemRestricted: file.item_restricted,
+    });
+    const after = fileIsRestricted({
+      adviserOverride: override, irlItemId: file.irl_item_id, itemRestricted: file.item_restricted,
+    });
+    await logAudit({
+      action: 'company_file.override_changed',
+      userId: req.user.sub,
+      resource: 'company_file',
+      resourceId: file.id,
+      detail: {
+        companyId: file.company_id,
+        filename: file.filename,
+        before: { override: file.adviser_override, restricted: before },
+        after: { override, restricted: after },
+        reason: reason || null,
+      },
+      ip: req.ip,
+    });
+
+    res.json({
+      id: updated.id,
+      adviserOverride: updated.adviser_override,
+      adviserOverrideReason: updated.adviser_override_reason,
+      adviserRestricted: after,
+      message: after
+        ? 'Advisers can no longer see this file.'
+        : 'Advisers whose access covers this company can now see this file.',
+    });
+  } catch (err) {
+    console.error('[company-files] Override error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 /**
  * Everyone a status change is announced to: the uploader and every active
@@ -2301,6 +2803,10 @@ companyFilesRouter.get('/:fileId/download', async (req, res) => {
         // were served without ever having been inspected.
         scanState: file.scan_state,
         unscanned: decision.unscanned,
+        // And under which access, so an adviser's downloads for a company can
+        // be listed on its Access tab (HANDOVER-CW028 §3.4).
+        accessLevel: req.access?.level || null,
+        grantId: req.access?.grantId || null,
       },
       ip: req.ip,
     });

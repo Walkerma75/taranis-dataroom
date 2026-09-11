@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import {
   Typography, Card, Tabs, Table, Button, Space, Tag, Alert, Spin, message, Descriptions,
-  DatePicker, Input, Form, Modal, Select, Checkbox, Progress, Popconfirm, Tooltip, Upload,
+  DatePicker, Input, Form, Modal, Select, Checkbox, Progress, Popconfirm, Tooltip, Upload, Switch,
 } from 'antd';
 import {
   ArrowLeftOutlined, UserAddOutlined, CopyOutlined, WarningOutlined, DownloadOutlined,
-  UploadOutlined, SendOutlined,
+  UploadOutlined, SendOutlined, LockOutlined, UnlockOutlined, KeyOutlined,
 } from '@ant-design/icons';
+import AccessTab from './CompanyAccessTab.jsx';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api, apiFetch } from '../../api/client.js';
@@ -27,7 +28,7 @@ import FileStatusModal from '../../components/FileStatusModal.jsx';
 const { Title, Text, Paragraph } = Typography;
 
 /** Tabs that can be linked to directly, for example from the admin Users page. */
-const TAB_KEYS = ['checklist', 'files', 'users', 'shared', 'settings'];
+const TAB_KEYS = ['checklist', 'files', 'users', 'shared', 'access', 'settings'];
 
 /**
  * One company, Taranis side.
@@ -66,6 +67,9 @@ export default function CompanyDetailPage() {
   const [publishing, setPublishing] = useState(false);
   const [withdrawDoc, setWithdrawDoc] = useState(null);
   const [downloadingFile, setDownloadingFile] = useState(null);
+  // The per-file adviser override (CW028 §3.3). A release needs a reason.
+  const [releaseFile, setReleaseFile] = useState(null);
+  const [releaseForm] = Form.useForm();
   const [inviteForm] = Form.useForm();
   const [publishForm] = Form.useForm();
   const [withdrawForm] = Form.useForm();
@@ -75,20 +79,22 @@ export default function CompanyDetailPage() {
   const load = async () => {
     setLoading(true);
     try {
+      // Users and Shared documents are admin-only routes since CW028; an
+      // adviser's page has neither tab, so it does not ask.
       const [c, i, f, u, s] = await Promise.all([
         api.get(`/companies/${companyId}`),
         api.get(`/companies/${companyId}/irl-items`),
         api.get(`/companies/${companyId}/files`),
-        api.get(`/companies/${companyId}/users`),
-        api.get(`/companies/${companyId}/shared-files`),
+        isAdmin ? api.get(`/companies/${companyId}/users`) : null,
+        isAdmin ? api.get(`/companies/${companyId}/shared-files`) : null,
       ]);
       const body = await c.json();
       if (!c.ok) throw new Error(body.error);
       setCompany(body);
       setItems(await i.json());
       setFiles(await f.json());
-      setMembers(await u.json());
-      setShared(await s.json());
+      setMembers(u ? await u.json() : []);
+      setShared(s ? await s.json() : []);
     } catch (err) {
       message.error(err.message);
     }
@@ -244,6 +250,19 @@ export default function CompanyDetailPage() {
     }
   };
 
+  /** Set or clear the per-file adviser override (HANDOVER-CW028 §3.3). */
+  const setOverride = async (file, override, reason) => {
+    try {
+      const res = await api.patch(`/company-files/${file.id}/adviser-access`, { override, reason: reason || null });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error);
+      message.success(body.message);
+      load();
+    } catch (err) {
+      message.error(err.message);
+    }
+  };
+
   /**
    * Open a file a company submitted.
    *
@@ -371,11 +390,13 @@ export default function CompanyDetailPage() {
             />
           ) : note),
         },
-        {
+        // Taranis-side only: the API never sends this field to an adviser, and
+        // the column is not drawn for them (HANDOVER-CW028 §3.5).
+        ...(isAdmin ? [{
           title: 'Internal note',
           dataIndex: 'internal_note',
           width: 260,
-          render: (note, row) => (canWrite ? (
+          render: (note, row) => (
             <Input.TextArea
               defaultValue={note || ''}
               size="small"
@@ -389,7 +410,34 @@ export default function CompanyDetailPage() {
                 if (res.ok) message.success('Internal note saved');
               }}
             />
-          ) : note),
+          ),
+        }] : []),
+        {
+          // The line no adviser grant crosses. Admins toggle it; everyone else
+          // sees the lock (CW028 §3.1, §3.3).
+          title: (
+            <Tooltip title="Files under a restricted item are for admins only; no adviser access ever shows them.">
+              <Space size={4}><LockOutlined /> Restricted</Space>
+            </Tooltip>
+          ),
+          dataIndex: 'adviser_restricted',
+          width: 120,
+          render: (restricted, row) => (isAdmin ? (
+            <Switch
+              size="small"
+              checked={!!restricted}
+              checkedChildren={<LockOutlined />}
+              unCheckedChildren={<UnlockOutlined />}
+              onChange={async (checked) => {
+                const res = await api.patch(`/companies/${companyId}/irl-items/${row.id}`, { adviserRestricted: checked });
+                const body = await res.json().catch(() => ({}));
+                if (res.ok) { message.success(checked ? 'Restricted from advisers' : 'Open to advisers whose access covers it'); load(); }
+                else message.error(body.error || 'Could not change the restriction');
+              }}
+            />
+          ) : (restricted ? (
+            <Tag icon={<LockOutlined />}>Restricted</Tag>
+          ) : null)),
         },
       ]}
     />
@@ -428,6 +476,18 @@ export default function CompanyDetailPage() {
                   <Text>{filename}</Text>
                   {isResponse(row) && <NoDocumentTag />}
                   {row.version > 1 && <Tag>v{row.version}</Tag>}
+                  {row.adviserRestricted && (
+                    <Tooltip title={row.adviserOverride === 'restricted'
+                      ? 'Restricted for this file specifically'
+                      : row.irlItemId ? 'Restricted because its item is' : 'Additional documents are restricted until released'}>
+                      <Tag icon={<LockOutlined />}>Admins only</Tag>
+                    </Tooltip>
+                  )}
+                  {row.adviserOverride === 'released' && (
+                    <Tooltip title={`Released to advisers: ${row.adviserOverrideReason || ''}`}>
+                      <Tag icon={<UnlockOutlined />} color="#C9A84C" style={{ color: '#fff', borderColor: 'transparent' }}>Released</Tag>
+                    </Tooltip>
+                  )}
                 </Space>
                 <ResponseMeta file={row} />
               </Space>
@@ -488,6 +548,30 @@ export default function CompanyDetailPage() {
                     Set status
                   </Button>
                 )}
+                {/* The per-file override, admins only (CW028 §3.3). */}
+                {isAdmin && !isResponse(row) && (row.adviserRestricted ? (
+                  <Button size="small" icon={<UnlockOutlined />} onClick={() => setReleaseFile(row)}>
+                    Release to advisers
+                  </Button>
+                ) : row.adviserOverride === 'released' ? (
+                  <Popconfirm
+                    title="Put this file back with its item?"
+                    description="It will be restricted again if its item is, or if it has no item."
+                    onConfirm={() => setOverride(row, 'follow_item')}
+                    okText="Follow item"
+                  >
+                    <Button size="small" icon={<LockOutlined />}>Un-release</Button>
+                  </Popconfirm>
+                ) : (
+                  <Popconfirm
+                    title="Restrict this file from advisers?"
+                    description="For a file that turns out to carry identity, banking or personal data under a standard item."
+                    onConfirm={() => setOverride(row, 'restricted')}
+                    okText="Restrict"
+                  >
+                    <Button size="small" icon={<LockOutlined />}>Restrict this file</Button>
+                  </Popconfirm>
+                ))}
               </Space>
             ),
           },
@@ -848,6 +932,14 @@ export default function CompanyDetailPage() {
               {COMPANY_STATUS_LABELS[company.status]}
             </Tag>
             {company.accessLevel === 'readonly' && <Tag>Read-only access</Tag>}
+            {company.access?.sections && (
+              <Tooltip title={company.access.sections.join('; ')}>
+                <Tag icon={<KeyOutlined />}>{company.access.sections.length} section{company.access.sections.length === 1 ? '' : 's'}</Tag>
+              </Tooltip>
+            )}
+            {company.access?.expiresAt && (
+              <Tag>Access until {formatUtc(company.access.expiresAt)}</Tag>
+            )}
           </Space>
           <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small">
             <Descriptions.Item label="Fund">{company.fundName}</Descriptions.Item>
@@ -887,12 +979,56 @@ export default function CompanyDetailPage() {
           items={[
             { key: 'checklist', label: `Checklist (${items.length})`, children: checklistTab },
             { key: 'files', label: `Files (${files.length})`, children: filesTab },
-            { key: 'users', label: `Users (${members.length})`, children: usersTab },
-            { key: 'shared', label: `Shared documents (${liveShared.length})`, children: sharedTab },
-            { key: 'settings', label: 'Settings', children: settingsTab },
+            // An adviser's page is the checklist and the files, nothing else
+            // (HANDOVER-CW028 §3.5). The API refuses the routes behind the
+            // other tabs to any grant, so this is presentation, not the control.
+            ...(isAdmin ? [
+              { key: 'users', label: `Users (${members.length})`, children: usersTab },
+              { key: 'shared', label: `Shared documents (${liveShared.length})`, children: sharedTab },
+              {
+                key: 'access',
+                label: 'Access',
+                children: <AccessTab company={company} items={items} />,
+              },
+              { key: 'settings', label: 'Settings', children: settingsTab },
+            ] : []),
           ]}
         />
       </Card>
+
+      <Modal
+        title={`Release ${releaseFile?.filename || ''} to advisers`}
+        open={!!releaseFile}
+        onCancel={() => { setReleaseFile(null); releaseForm.resetFields(); }}
+        onOk={async () => {
+          const { reason } = await releaseForm.validateFields();
+          await setOverride(releaseFile, 'released', reason.trim());
+          setReleaseFile(null);
+          releaseForm.resetFields();
+        }}
+        okText="Release"
+        destroyOnClose
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message="This file is restricted from advisers"
+          description={releaseFile?.irlItemId
+            ? `Its item (${releaseFile?.itemRef}) is restricted: identity, banking, ownership or personal material. Release only a copy that carries none of that.`
+            : 'Additional documents are restricted until an admin releases them.'}
+          style={{ marginBottom: 16 }}
+        />
+        <Form form={releaseForm} layout="vertical" requiredMark={false}>
+          <Form.Item
+            name="reason"
+            label="Reason"
+            extra="Recorded in the audit log with your name."
+            rules={[{ required: true, whitespace: true, message: 'A reason is required to release a file' }]}
+          >
+            <Input.TextArea rows={2} maxLength={500} showCount />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal
         title="Invite a company user"

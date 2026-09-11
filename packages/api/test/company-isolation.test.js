@@ -540,8 +540,15 @@ test('a readonly reviewer can read a company but cannot change it', async (t) =>
   assert.equal(read.status, 200);
   assert.equal(read.body.accessLevel, 'readonly');
 
-  const write = await server.request(`/companies/${COMPANY_A}`, {
+  // Company settings are admin-only outright since CW028 (C028 §2.1)...
+  const settings = await server.request(`/companies/${COMPANY_A}`, {
     method: 'PATCH', token, body: { jurisdiction: 'DIFC' },
+  });
+  assert.equal(settings.status, 403);
+
+  // ...and a read-only grant cannot touch a checklist item either.
+  const write = await server.request(`/companies/${COMPANY_A}/irl-items/item-1`, {
+    method: 'PATCH', token, body: { internalNote: 'x' },
   });
   assert.equal(write.status, 403);
   assert.match(write.body.error, /read-only/);
@@ -559,7 +566,7 @@ test('an assigned reviewer cannot activate, suspend or invite: those stay admin-
     `/companies/${COMPANY_A}/suspend`,
     `/companies/${COMPANY_A}/offboard`,
     `/companies/${COMPANY_A}/users`,
-    `/companies/${COMPANY_A}/reviewers`,
+    `/companies/${COMPANY_A}/access`,
   ]) {
     const res = await server.request(path, { method: 'POST', token, body: {} });
     assert.equal(res.status, 403, `${path} should be admin-only`);
@@ -777,36 +784,36 @@ test('the ?token= form of the shared download is scoped by the claim, not by the
   assert.equal(lookup.params[1], COMPANY_A);
 });
 
-test('a readonly Taranis reviewer can read shared documents but cannot publish or withdraw', async (t) => {
-  const pool = fakePool([
-    reviewerHandler('readonly'),
-    ['JOIN users p ON p.id = s.published_by', []],
-  ]);
-  const server = await startTestServer(COMPANY_MOUNTS, pool);
-  t.after(() => server.close());
+test('shared documents are admin-only on the Taranis side: a reviewer of either level is refused', async () => {
+  // HANDOVER-CW028 §3.5: an adviser never sees the Shared documents tab, so the
+  // routes behind it refuse every grant, read-only and reviewer alike.
+  for (const level of ['readonly', 'reviewer']) {
+    const pool = fakePool([reviewerHandler(level)]);
+    const server = await startTestServer(COMPANY_MOUNTS, pool);
+    const token = tokenFor({ role: 'advisor', sub: 'advisor-1' });
 
-  const token = tokenFor({ role: 'advisor', sub: 'advisor-1' });
+    const read = await server.request(`/companies/${COMPANY_A}/shared-files`, { token });
+    assert.equal(read.status, 403, `${level} list`);
 
-  const read = await server.request(`/companies/${COMPANY_A}/shared-files`, { token });
-  assert.equal(read.status, 200);
-
-  const withdraw = await server.request(
-    `/companies/${COMPANY_A}/shared-files/${SHARED_IN_B}/withdraw`,
-    { method: 'POST', token, body: {} }
-  );
-  assert.equal(withdraw.status, 403);
-  assert.match(withdraw.body.error, /read-only/);
+    const withdraw = await server.request(
+      `/companies/${COMPANY_A}/shared-files/${SHARED_IN_B}/withdraw`,
+      { method: 'POST', token, body: {} }
+    );
+    assert.equal(withdraw.status, 403, `${level} withdraw`);
+    assert.equal(pool.calls.some((c) => c.text.includes('company_shared_files')), false);
+    await server.close();
+  }
 });
 
-test('a Taranis user with no assignment to a company gets 404 on its shared documents', async (t) => {
+test('a Taranis user with no assignment to a company gets 404 on its checklist and files', async (t) => {
   const pool = fakePool([reviewerHandler(null)]);
   const server = await startTestServer(COMPANY_MOUNTS, pool);
   t.after(() => server.close());
 
-  const res = await server.request(`/companies/${COMPANY_A}/shared-files`, {
-    token: tokenFor({ role: 'advisor', sub: 'advisor-1' }),
-  });
-  assert.equal(res.status, 404);
+  for (const path of [`/companies/${COMPANY_A}/irl-items`, `/companies/${COMPANY_A}/files`]) {
+    const res = await server.request(path, { token: tokenFor({ role: 'advisor', sub: 'advisor-1' }) });
+    assert.equal(res.status, 404, path);
+  }
 });
 
 // ---------------------------------------------------------------------------
