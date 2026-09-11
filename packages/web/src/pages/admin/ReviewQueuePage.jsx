@@ -13,6 +13,7 @@ import {
   formatBytes, formatUtc,
 } from '../company/irlDisplay.js';
 import { NoDocumentTag, ResponseMeta } from '../company/ResponseParts.jsx';
+import { LockOutlined } from '@ant-design/icons';
 import FileStatusModal from '../../components/FileStatusModal.jsx';
 
 const { Title, Text, Paragraph } = Typography;
@@ -137,7 +138,7 @@ export default function ReviewQueuePage() {
       // reason and its date or related item (HANDOVER-CW026 §3.6).
       render: (filename, row) => (isResponse(row) ? (
         <Space direction="vertical" size={2}>
-          <Space size={6} wrap><Text>{filename}</Text><NoDocumentTag /></Space>
+          <Space size={6} wrap><Text>{filename}</Text>{row.adviserRestricted && <Tag icon={<LockOutlined />}>Admins only</Tag>}<NoDocumentTag /></Space>
           <ResponseMeta file={row} />
         </Space>
       ) : filename),

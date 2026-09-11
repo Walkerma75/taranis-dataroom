@@ -400,17 +400,14 @@ export async function loadCompanyMembership(userId, client = pool) {
  * Returns 'admin' | 'reviewer' | 'readonly' | null.
  */
 export async function taranisAccessLevel({ userId, role, companyId }, client = pool) {
-  if (role === 'admin') return 'admin';
-  if (role === 'company') return null;
-
-  const { rows: [row] } = await client.query(
-    `SELECT level FROM company_reviewers WHERE user_id = $1 AND company_id = $2`,
-    [userId, companyId]
-  );
-  return row?.level || null;
+  // Since HANDOVER-CW028 the rule lives in services/adviser-access.js, which
+  // also knows about expiry, scope and two-step verification. This wrapper
+  // answers the old question (a level or null) from the same source; a grant
+  // whose holder has not enrolled two-step verification reads as no grant.
+  const { resolveCompanyAccess } = await import('./adviser-access.js');
+  const access = await resolveCompanyAccess({ userId, role, companyId }, client);
+  if (!access || access.mfaRequired) return null;
+  return access.level;
 }
 
-/** Reviewer level and admin can change things; readonly cannot. */
-export function canWriteAtLevel(level) {
-  return level === 'admin' || level === 'reviewer';
-}
+export { canWriteAtLevel } from './adviser-access.js';

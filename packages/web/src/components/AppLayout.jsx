@@ -88,6 +88,19 @@ export default function AppLayout() {
     return () => clearInterval(timer);
   }, [isAdmin, refreshBadge]);
 
+  // Whether a non-admin holds any reviewer-level grant. The review queue is
+  // an action list; a person whose access is all read-only has nothing to do
+  // there, so the entry is hidden (HANDOVER-CW028 §3.5). The API filters the
+  // route itself either way.
+  const [canReview, setCanReview] = useState(false);
+  useEffect(() => {
+    if (!user || user.role === 'admin' || !['advisor', 'viewer'].includes(user.role)) return;
+    api.get('/companies')
+      .then((res) => (res.ok ? res.json() : []))
+      .then((rows) => setCanReview((rows || []).some((c) => c.accessLevel === 'reviewer')))
+      .catch(() => setCanReview(false));
+  }, [user]);
+
   const canManageUsers = hasCap(user, 'canManageUsers');
   const canManageFunds = hasCap(user, 'canManageFunds');
   const canViewAudit = hasCap(user, 'canViewAudit');
@@ -122,11 +135,13 @@ export default function AppLayout() {
             icon: <SolutionOutlined />,
             label: 'Companies',
           },
-          {
-            key: '/admin/review-queue',
-            icon: <InboxOutlined />,
-            label: 'Review Queue',
-          },
+          ...((isAdmin || canReview)
+            ? [{
+                key: '/admin/review-queue',
+                icon: <InboxOutlined />,
+                label: 'Review Queue',
+              }]
+            : []),
           // Standard DD forms are published to every company, so managing them
           // is admin-only even though assigned reviewers see the two entries
           // above (CW027 §3.3).

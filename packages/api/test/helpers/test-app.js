@@ -81,8 +81,17 @@ export function membershipHandler(row) {
   return ['FROM company_users cu', row ? [row] : []];
 }
 
-export function reviewerHandler(level) {
-  return ['SELECT level FROM company_reviewers', level ? [{ level }] : []];
+/**
+ * The handler `resolveCompanyAccess` needs. `level` null means no live grant.
+ * Two-step verification is enrolled unless `mfa: false`, and the grant is
+ * unscoped and open-ended unless `sections` / `expiresAt` say otherwise.
+ */
+export function reviewerHandler(level, {
+  mfa = true, sections = null, expiresAt = null, id = 'grant-1', companyId = null,
+} = {}) {
+  return ['FROM company_reviewers r', level ? [{
+    id, level, sections, expires_at: expiresAt, totp_verified: mfa, company_id: companyId,
+  }] : []];
 }
 
 export function tokenFor({

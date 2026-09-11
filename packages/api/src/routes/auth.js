@@ -22,6 +22,7 @@ import {
   hashToken,
 } from '../services/auth.js';
 import { logAudit } from '../services/audit.js';
+import { GRANTABLE_ROLES, hasLiveCompanyGrant } from '../services/adviser-access.js';
 import { requireAuth, requireAuthForMfaEnrolment, requireRole } from '../middleware/auth.js';
 import { loadCompanyMembership } from '../services/companies.js';
 
@@ -70,6 +71,18 @@ export function normaliseTotpCode(code) {
  */
 export function mfaIsMandatoryFor(role) {
   return role === 'company';
+}
+
+/**
+ * The same rule, extended for HANDOVER-CW028 §3.6: an advisor or viewer who
+ * holds a live grant on a company in diligence must also enrol before they
+ * reach anything. Role alone cannot say, so this asks the database. Everyone
+ * else keeps opt-in behaviour, as before.
+ */
+export async function mfaIsMandatoryForUser(user) {
+  if (mfaIsMandatoryFor(user.role)) return true;
+  if (!GRANTABLE_ROLES.includes(user.role)) return false;
+  return hasLiveCompanyGrant(user.id);
 }
 
 /**
@@ -149,7 +162,7 @@ router.post('/login', async (req, res) => {
     // gets a token that reaches the two MFA enrolment endpoints and nothing
     // else, so they can complete enrolment in this same session but cannot see
     // a single checklist item until they have.
-    if (mfaIsMandatoryFor(user.role) && !user.totp_verified) {
+    if (!user.totp_verified && await mfaIsMandatoryForUser(user)) {
       const enrolmentToken = signAccessToken(user, { mfaPending: true });
       await logAudit({
         action: 'login.success',

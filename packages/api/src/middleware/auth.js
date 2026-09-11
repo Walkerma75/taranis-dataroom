@@ -18,7 +18,8 @@
  *                  their 15-minute access token expires.
  */
 import { verifyAccessToken } from '../services/auth.js';
-import { loadCompanyMembership, taranisAccessLevel, canWriteAtLevel } from '../services/companies.js';
+import { loadCompanyMembership } from '../services/companies.js';
+import { resolveCompanyAccess, canWriteAtLevel } from '../services/adviser-access.js';
 
 function readBearer(req) {
   // Support token via query string for iframe/download links opened in new tabs
@@ -238,20 +239,32 @@ export function requireCompanyAccess({ write = false, param = 'id' } = {}) {
     }
 
     try {
-      const level = await taranisAccessLevel({
+      const access = await resolveCompanyAccess({
         userId: req.user.sub,
         role: req.user.role,
         companyId,
       });
 
       // Same response for "no such company" and "not yours", so the endpoint
-      // cannot be used to discover which company ids exist.
-      if (!level) return res.status(404).json({ error: 'Company not found' });
-      if (write && !canWriteAtLevel(level)) {
+      // cannot be used to discover which company ids exist. An expired grant is
+      // not returned by the resolver, so it lands here too.
+      if (!access) return res.status(404).json({ error: 'Company not found' });
+
+      // A live grant without two-step verification: told why, at the point of
+      // access, so a session older than the grant cannot slip through on its
+      // token lifetime (HANDOVER-CW028 §3.6, C028 §2.2).
+      if (access.mfaRequired) {
+        return res.status(403).json({
+          error: 'Two-factor authentication must be set up before you can see company information.',
+          mfaEnrolmentRequired: true,
+        });
+      }
+      if (write && !canWriteAtLevel(access.level)) {
         return res.status(403).json({ error: 'Your access to this company is read-only' });
       }
 
-      req.accessLevel = level;
+      req.accessLevel = access.level;
+      req.access = access;
       next();
     } catch (err) {
       console.error('[auth] Company access resolution failed:', err.message);
