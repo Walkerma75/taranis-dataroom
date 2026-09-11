@@ -46,7 +46,7 @@ async function withServer(pool, fn) {
 // ---------------------------------------------------------------------------
 
 test('a code from the previous or next 30-second step validates', () => {
-  // The whole of the AdrenoMed enrolment failure: every app on a phone reads
+  // The whole of the pilot company's enrolment failure: every app on a phone reads
   // that phone's clock, so a device half a minute out produces codes that a
   // zero-tolerance window rejects without ever saying why.
   assert.equal(authenticator.check(codeAtOffset(SECRET, -1), SECRET), true, 'previous step');

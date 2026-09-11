@@ -226,7 +226,7 @@ export class MemoryMailer {
  * (HANDOVER-C011 §3.3). So for now a message can be recorded here as sent, be
  * hard-bounced at the far end, and every subsequent send to that address be
  * dropped by SES silently — with the app's own tables showing nothing at all.
- * That is the AdrenoMed shape (HANDOVER-CW015 §2A), and it is invisible without
+ * That is the pilot company's shape (HANDOVER-CW015 §2A), and it is invisible without
  * this call.
  *
  * DEGRADES RATHER THAN FAILS. The task role may not carry

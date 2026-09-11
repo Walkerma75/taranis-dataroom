@@ -220,7 +220,7 @@ async function publish(server, form, token = adminToken()) {
 
 function activeCompany() {
   return ['SELECT id, legal_name, status FROM companies', [{
-    id: COMPANY_A, legal_name: 'AdrenoMed AG', status: 'active',
+    id: COMPANY_A, legal_name: 'Example Bio AG', status: 'active',
   }]];
 }
 
@@ -329,7 +329,7 @@ test('nothing can be published to an offboarded company', async (t) => {
 
   const pool = fakePool([
     ['SELECT id, legal_name, status FROM companies', [{
-      id: COMPANY_A, legal_name: 'AdrenoMed AG', status: 'offboarded',
+      id: COMPANY_A, legal_name: 'Example Bio AG', status: 'offboarded',
     }]],
   ]);
   const server = await startTestServer(MOUNTS, pool);

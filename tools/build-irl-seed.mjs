@@ -25,13 +25,18 @@ import ExcelJS from 'exceljs';
 // COMPANY_UNSAFE_PATTERNS has to take effect here too, or the spreadsheet
 // becomes the way round it (HANDOVER-CW019 §3.3).
 import {
-  findUnsafeRowText, describeUnsafe,
+  findUnsafeRowText, findUnsafeMasterRowText, describeUnsafe,
 } from '../packages/api/src/services/company-visible-text.js';
 
+// `adviser_access` is REQUIRED (HANDOVER-CW028 §3.2): a master that lacks the
+// column cannot be imported, so nobody can add a fund's checklist without
+// deciding which of its items advisers must never see. Blank cells are fine;
+// the only non-blank value is 'restricted'.
 const COLUMNS = [
   'section', 'ref', 'description', 'priority',
-  'sort_order', 'already_held', 'note_for_company',
+  'sort_order', 'already_held', 'note_for_company', 'adviser_access',
 ];
+const ADVISER_ACCESS_VALUES = ['', 'restricted'];
 
 const [, , inputPath, outputPath, sheetNameArg] = process.argv;
 
@@ -66,6 +71,10 @@ const cell = (row, i) => {
 const header = COLUMNS.map((_, i) => String(cell(sheet.getRow(1), i + 1) || '').trim());
 if (header.join('|') !== COLUMNS.join('|')) {
   console.error('Unexpected header row.');
+  if (!header.includes('adviser_access')) {
+    console.error('  The adviser_access column is required (HANDOVER-CW028 §3.2): mark each item');
+    console.error('  advisers must never see as "restricted" and leave the rest blank.');
+  }
   console.error(`  expected: ${COLUMNS.join(', ')}`);
   console.error(`  found:    ${header.join(', ')}`);
   process.exit(1);
@@ -86,6 +95,7 @@ sheet.eachRow((row, number) => {
     sort_order: Number(cell(row, 5)),
     already_held: cell(row, 6) ? String(cell(row, 6)).trim() : null,
     note_for_company: cell(row, 7) ? String(cell(row, 7)).trim() : null,
+    adviser_access: String(cell(row, 8) ?? '').trim().toLowerCase(),
   });
 });
 
@@ -102,10 +112,21 @@ for (const item of items) {
   if (!Number.isInteger(item.sort_order)) {
     problems.push(`ref ${item.ref}: sort_order is not an integer`);
   }
+  if (!ADVISER_ACCESS_VALUES.includes(item.adviser_access)) {
+    problems.push(`ref ${item.ref}: adviser_access must be blank or "restricted", not "${item.adviser_access}"`);
+  }
   // A CASS score or an internal source in a company-visible column. The master
   // is the earliest point this can be caught, and catching it here means the
   // deal team fixes the spreadsheet rather than the committed artefact.
   for (const hit of findUnsafeRowText(item)) problems.push(describeUnsafe(hit));
+  // A particular company or programme named in master text (CW028 §3.8).
+  for (const hit of findUnsafeMasterRowText(item)) problems.push(describeUnsafe(hit));
+}
+
+// The artefact carries a boolean, not the spreadsheet's word.
+for (const item of items) {
+  item.adviser_restricted = item.adviser_access === 'restricted';
+  delete item.adviser_access;
 }
 if (problems.length) {
   console.error('Refusing to write the seed:');
@@ -114,6 +135,7 @@ if (problems.length) {
 }
 
 const sections = [...new Set(items.map((i) => i.section))];
+const restricted = items.filter((i) => i.adviser_restricted).map((i) => i.ref);
 const priorities = items.reduce((acc, i) => {
   acc[i.priority] = (acc[i.priority] || 0) + 1;
   return acc;
@@ -125,6 +147,7 @@ const seed = {
   itemCount: items.length,
   sectionCount: sections.length,
   priorityCounts: priorities,
+  adviserRestrictedCount: restricted.length,
   items,
 };
 
@@ -134,3 +157,4 @@ fs.writeFileSync(outputPath, `${JSON.stringify(seed, null, 2)}\n`, 'utf8');
 console.log(`Wrote ${outputPath}`);
 console.log(`  ${items.length} items, ${refs.size} unique refs, ${sections.length} sections`);
 console.log(`  priorities: ${Object.entries(priorities).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+console.log(`  adviser-restricted: ${restricted.length} (${restricted.join(', ')})`);

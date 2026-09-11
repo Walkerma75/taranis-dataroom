@@ -334,7 +334,7 @@ test('the seeded state follows what Taranis already holds', () => {
   assert.equal(seedStateFor(''), 'outstanding');
   assert.equal(seedStateFor('   '), 'outstanding');
   assert.equal(seedStateFor('partial'), 'partially_held');
-  assert.equal(seedStateFor('Partially held from the AdrenoMed pack'), 'partially_held');
+  assert.equal(seedStateFor('Partially held from the pilot company pack'), 'partially_held');
   assert.equal(seedStateFor('Signed M&A on file'), 'held');
 });
 

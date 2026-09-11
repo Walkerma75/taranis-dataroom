@@ -34,7 +34,7 @@ const router = Router();
  * current 30-second step. Every authenticator app derives its codes from the
  * DEVICE clock, so a phone thirty seconds out produces codes that are all
  * rejected, in every app on that phone, with no clue as to why — which is
- * exactly what AdrenoMed hit (HANDOVER-CW015 §2B) while a company on a
+ * exactly what the pilot company hit (HANDOVER-CW015 §2B) while a company on a
  * correctly-set device enrolled without trouble.
  *
  * A window of 1 accepts the previous and next step: RFC 6238 §5.2 anticipates

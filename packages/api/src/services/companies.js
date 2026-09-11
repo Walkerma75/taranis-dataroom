@@ -329,7 +329,8 @@ export function seedStateFor(alreadyHeld) {
 
 export async function seedCompanyChecklist({ companyId, templateId }, client = pool) {
   const { rows: templateItems } = await client.query(
-    `SELECT id, section, ref, description, priority, sort_order, already_held, note_for_company
+    `SELECT id, section, ref, description, priority, sort_order, already_held, note_for_company,
+            adviser_restricted
      FROM irl_template_items WHERE template_id = $1 ORDER BY sort_order`,
     [templateId]
   );
@@ -343,12 +344,16 @@ export async function seedCompanyChecklist({ companyId, templateId }, client = p
     const { rowCount } = await client.query(
       `INSERT INTO company_irl_items
          (company_id, template_item_id, section, ref, description, priority, state,
-          baseline_state, already_held, note_for_company, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          baseline_state, already_held, note_for_company, sort_order, adviser_restricted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (company_id, ref) DO NOTHING`,
       [
         companyId, t.id, t.section, t.ref, t.description, t.priority,
         seeded, seeded, t.already_held, t.note_for_company, t.sort_order,
+        // Copied at seeding, like everything else on the row, so a later change
+        // to the master does not silently widen an adviser's view of a company
+        // already in diligence (HANDOVER-CW028 §3.2).
+        t.adviser_restricted === true,
       ]
     );
     inserted += rowCount;

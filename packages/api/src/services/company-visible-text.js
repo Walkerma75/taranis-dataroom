@@ -276,3 +276,63 @@ export function findUnsafeRowText(row = {}) {
 export function describeUnsafe({ ref, field, term, match }) {
   return `${ref ? `ref ${ref}, ` : ''}${field}: ${term} ("${match}")`;
 }
+
+// ---------------------------------------------------------------------------
+// MASTER TEXT: no company, no programme (HANDOVER-CW028 §3.8)
+//
+// The Biotech master was first built from one company's own pre-filled
+// request, and two items carried that company's programme into the master
+// every Biotech company is seeded from: "bio-ADM / DPP3" at 2.7 and
+// "(BOOST Phase 3)" at 3.3. The spreadsheet was neutralised on 25 August 2026
+// and the live workspaces corrected by hand, but the committed JSON never was,
+// so a re-import brought the wording back. This list is the guard that stops
+// it coming back a third time.
+//
+// It applies to MASTER text only: `section`, `description` and `already_held`
+// as they appear on a master or template row. It is deliberately NOT applied
+// to `note_for_company`, where a company's own name is legitimate, and it is a
+// separate list from COMPANY_UNSAFE_PATTERNS because the two answer different
+// questions: that one is "may a company read this", this one is "does this
+// master name a particular company or programme".
+//
+// ADDING A TERM. Add it here and nowhere else; the seed builder and the seed
+// validator both read this constant.
+// ---------------------------------------------------------------------------
+export const MASTER_TEXT_UNSAFE_PATTERNS = [
+  { term: 'a company name', pattern: /\bAdreno\s?Med\b/i },
+  { term: 'a programme biomarker', pattern: /\bbio-?ADM\b/i },
+  { term: 'a programme biomarker', pattern: /\bDPP3\b/i },
+  { term: 'a programme trial', pattern: /\bBOOST\s+Phase\s+3\b/i },
+  { term: 'a programme compound', pattern: /\badrecizumab\b/i },
+];
+
+/** The master columns the list above is applied to. */
+export const MASTER_TEXT_FIELDS = Object.freeze(['section', 'description', 'already_held']);
+
+/** Every company- or programme-specific fragment in `value`. Empty means neutral. */
+export function findMasterUnsafeText(value) {
+  if (value === null || value === undefined) return [];
+  const text = String(value);
+  if (!text.trim()) return [];
+  const hits = [];
+  for (const { term, pattern } of MASTER_TEXT_UNSAFE_PATTERNS) {
+    const found = pattern.exec(text);
+    if (found) hits.push({ tier: 'master-text', term, match: found[0].trim() });
+  }
+  return hits;
+}
+
+/**
+ * Check a master row for company- or programme-specific wording. Same shape as
+ * `findUnsafeRowText`, so the builder and the validator report both kinds of
+ * problem through `describeUnsafe`.
+ */
+export function findUnsafeMasterRowText(row = {}) {
+  const problems = [];
+  for (const column of MASTER_TEXT_FIELDS) {
+    for (const hit of findMasterUnsafeText(row[column])) {
+      problems.push({ ref: row.ref, field: column, ...hit });
+    }
+  }
+  return problems;
+}

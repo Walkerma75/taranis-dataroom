@@ -5,7 +5,7 @@
  * private subnet, and a send withheld for suppression was recorded as an outbox
  * row that nothing ever showed anyone. An administrator resending an invitation
  * was told it worked whether or not it could possibly have gone out, which is
- * how two AdrenoMed invitations went missing without anybody knowing
+ * how two of the pilot company's invitations went missing without anybody knowing
  * (HANDOVER-CW015 §2A, §3.4).
  */
 import { test } from 'node:test';
@@ -156,7 +156,7 @@ test('releasing a suppression marks the row released rather than deleting it', a
     const res = await request('/maintenance/email-suppressions/release', {
       method: 'POST',
       token: tokenFor({ sub: 'admin-1', role: 'admin' }),
-      body: { email: ADDRESS, reason: 'Gateway whitelisted; bounce was AdrenoMed-side.' },
+      body: { email: ADDRESS, reason: 'Gateway whitelisted; bounce was on the company side.' },
     });
 
     assert.equal(res.status, 200, JSON.stringify(res.body));

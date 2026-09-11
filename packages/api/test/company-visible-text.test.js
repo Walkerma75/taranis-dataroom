@@ -15,6 +15,7 @@ import {
   assertCompanySafeText,
   CompanyVisibleTextError,
   findUnsafeRowText,
+  findUnsafeMasterRowText, findMasterUnsafeText,
 } from '../src/services/company-visible-text.js';
 import {
   buildGapsWorkbook,
@@ -179,6 +180,21 @@ test('assertCompanySafeText names the field, the term and the fragment', () => {
   assert.equal(assertCompanySafeText('alreadyHeld', 'Certificate held'), 'Certificate held');
 });
 
+test('the master-text guard catches a company or programme name in section, description or already_held', () => {
+  const hit = (row) => findUnsafeMasterRowText(row).map((h) => `${h.field}:${h.match}`);
+  assert.deepEqual(hit({ ref: '2.7', description: 'Biomarker strategy — bio-ADM / DPP3' }), ['description:bio-ADM', 'description:DPP3']);
+  assert.deepEqual(hit({ ref: '3.3', description: 'Protocol synopses (BOOST Phase 3)' }), ['description:BOOST Phase 3']);
+  assert.deepEqual(hit({ ref: '1.1', already_held: 'AdrenoMed M&A on file' }), ['already_held:AdrenoMed']);
+  assert.deepEqual(hit({ ref: '1.1', section: 'Adreno Med specifics' }), ['section:Adreno Med']);
+  assert.deepEqual(hit({ ref: '1.1', description: 'adrecizumab dossier' }), ['description:adrecizumab']);
+  // Not applied to per-company fields, where the company's own name is legitimate.
+  assert.deepEqual(hit({ ref: '1.1', note_for_company: 'AdrenoMed to confirm' }), []);
+  // Ordinary biotech prose is not flagged.
+  assert.deepEqual(hit({ ref: '2.7', description: 'Biomarker strategy and any companion diagnostics' }), []);
+  assert.deepEqual(hit({ ref: '3.3', description: 'Phase 3 protocol synopses for planned trials' }), []);
+  assert.deepEqual(findMasterUnsafeText(null), []);
+});
+
 test('findUnsafeRowText reads the two company-visible columns and no others', () => {
   const problems = findUnsafeRowText({
     ref: '13.10',
@@ -275,7 +291,7 @@ test('a template row carrying a CASS reference fails seed validation', () => {
       section: '13. Scientific', ref: '13.10', description: 'Assay validation pack',
       priority: 'high', sort_order: 1,
       already_held: 'CASS records completed Phase 2a work',
-      note_for_company: null,
+      note_for_company: null, adviser_restricted: false,
     }],
   });
 

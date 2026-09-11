@@ -1,5 +1,5 @@
 {
-  "source": "Biotech_KSA_IRL_Master_Seed_v1_06Aug2026.xlsx",
+  "source": "Biotech_KSA_IRL_Master_Seed_v1.1_11Sep2026.xlsx",
   "sheet": "IRL master",
   "itemCount": 146,
   "sectionCount": 14,
@@ -8,6 +8,7 @@
     "standard": 61,
     "high": 42
   },
+  "adviserRestrictedCount": 21,
   "items": [
     {
       "section": "1. Corporate & Structure",
@@ -16,7 +17,8 @@
       "priority": "medium",
       "sort_order": 1,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "1. Corporate & Structure",
@@ -25,7 +27,8 @@
       "priority": "medium",
       "sort_order": 2,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "1. Corporate & Structure",
@@ -34,7 +37,8 @@
       "priority": "medium",
       "sort_order": 3,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "1. Corporate & Structure",
@@ -43,7 +47,8 @@
       "priority": "medium",
       "sort_order": 4,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "1. Corporate & Structure",
@@ -52,7 +57,8 @@
       "priority": "medium",
       "sort_order": 5,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "1. Corporate & Structure",
@@ -61,7 +67,8 @@
       "priority": "medium",
       "sort_order": 6,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "1. Corporate & Structure",
@@ -70,7 +77,8 @@
       "priority": "medium",
       "sort_order": 7,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "1. Corporate & Structure",
@@ -79,7 +87,8 @@
       "priority": "medium",
       "sort_order": 8,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "1. Corporate & Structure",
@@ -88,7 +97,8 @@
       "priority": "medium",
       "sort_order": 9,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "1. Corporate & Structure",
@@ -97,7 +107,8 @@
       "priority": "medium",
       "sort_order": 10,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "1. Corporate & Structure",
@@ -106,7 +117,8 @@
       "priority": "medium",
       "sort_order": 11,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "1. Corporate & Structure",
@@ -115,7 +127,8 @@
       "priority": "medium",
       "sort_order": 12,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "2. Programmes & Scientific Pipeline",
@@ -124,7 +137,8 @@
       "priority": "standard",
       "sort_order": 13,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "2. Programmes & Scientific Pipeline",
@@ -133,7 +147,8 @@
       "priority": "standard",
       "sort_order": 14,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "2. Programmes & Scientific Pipeline",
@@ -142,7 +157,8 @@
       "priority": "standard",
       "sort_order": 15,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "2. Programmes & Scientific Pipeline",
@@ -151,7 +167,8 @@
       "priority": "standard",
       "sort_order": 16,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "2. Programmes & Scientific Pipeline",
@@ -160,7 +177,8 @@
       "priority": "standard",
       "sort_order": 17,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "2. Programmes & Scientific Pipeline",
@@ -169,16 +187,18 @@
       "priority": "standard",
       "sort_order": 18,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "2. Programmes & Scientific Pipeline",
       "ref": "2.7",
-      "description": "Biomarker strategy — bio-ADM / DPP3 and any companion diagnostics",
+      "description": "Biomarker strategy and any companion diagnostics",
       "priority": "standard",
       "sort_order": 19,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "2. Programmes & Scientific Pipeline",
@@ -187,7 +207,8 @@
       "priority": "standard",
       "sort_order": 20,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "2. Programmes & Scientific Pipeline",
@@ -196,7 +217,8 @@
       "priority": "standard",
       "sort_order": 21,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "2. Programmes & Scientific Pipeline",
@@ -205,7 +227,8 @@
       "priority": "standard",
       "sort_order": 22,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "2. Programmes & Scientific Pipeline",
@@ -214,7 +237,8 @@
       "priority": "standard",
       "sort_order": 23,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "2. Programmes & Scientific Pipeline",
@@ -223,7 +247,8 @@
       "priority": "standard",
       "sort_order": 24,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "3. Clinical Development & Strategy",
@@ -232,7 +257,8 @@
       "priority": "medium",
       "sort_order": 25,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "3. Clinical Development & Strategy",
@@ -241,16 +267,18 @@
       "priority": "medium",
       "sort_order": 26,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "3. Clinical Development & Strategy",
       "ref": "3.3",
-      "description": "Protocol synopses for ongoing and planned trials (BOOST Phase 3)",
+      "description": "Protocol synopses for ongoing and planned trials",
       "priority": "medium",
       "sort_order": 27,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "3. Clinical Development & Strategy",
@@ -259,7 +287,8 @@
       "priority": "medium",
       "sort_order": 28,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "3. Clinical Development & Strategy",
@@ -268,7 +297,8 @@
       "priority": "medium",
       "sort_order": 29,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "3. Clinical Development & Strategy",
@@ -277,7 +307,8 @@
       "priority": "medium",
       "sort_order": 30,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "3. Clinical Development & Strategy",
@@ -286,7 +317,8 @@
       "priority": "medium",
       "sort_order": 31,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "3. Clinical Development & Strategy",
@@ -295,7 +327,8 @@
       "priority": "medium",
       "sort_order": 32,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "3. Clinical Development & Strategy",
@@ -304,7 +337,8 @@
       "priority": "medium",
       "sort_order": 33,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "3. Clinical Development & Strategy",
@@ -313,7 +347,8 @@
       "priority": "medium",
       "sort_order": 34,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "3. Clinical Development & Strategy",
@@ -322,7 +357,8 @@
       "priority": "medium",
       "sort_order": 35,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "4. CMC & Manufacturing",
@@ -331,7 +367,8 @@
       "priority": "medium",
       "sort_order": 36,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "4. CMC & Manufacturing",
@@ -340,7 +377,8 @@
       "priority": "medium",
       "sort_order": 37,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "4. CMC & Manufacturing",
@@ -349,7 +387,8 @@
       "priority": "medium",
       "sort_order": 38,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "4. CMC & Manufacturing",
@@ -358,7 +397,8 @@
       "priority": "medium",
       "sort_order": 39,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "4. CMC & Manufacturing",
@@ -367,7 +407,8 @@
       "priority": "medium",
       "sort_order": 40,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "4. CMC & Manufacturing",
@@ -376,7 +417,8 @@
       "priority": "medium",
       "sort_order": 41,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "4. CMC & Manufacturing",
@@ -385,7 +427,8 @@
       "priority": "medium",
       "sort_order": 42,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "4. CMC & Manufacturing",
@@ -394,7 +437,8 @@
       "priority": "medium",
       "sort_order": 43,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "4. CMC & Manufacturing",
@@ -403,7 +447,8 @@
       "priority": "medium",
       "sort_order": 44,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "4. CMC & Manufacturing",
@@ -412,7 +457,8 @@
       "priority": "medium",
       "sort_order": 45,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "5. Intellectual Property",
@@ -421,7 +467,8 @@
       "priority": "high",
       "sort_order": 46,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "5. Intellectual Property",
@@ -430,7 +477,8 @@
       "priority": "high",
       "sort_order": 47,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "5. Intellectual Property",
@@ -439,7 +487,8 @@
       "priority": "high",
       "sort_order": 48,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "5. Intellectual Property",
@@ -448,7 +497,8 @@
       "priority": "high",
       "sort_order": 49,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "5. Intellectual Property",
@@ -457,7 +507,8 @@
       "priority": "high",
       "sort_order": 50,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "5. Intellectual Property",
@@ -466,7 +517,8 @@
       "priority": "high",
       "sort_order": 51,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "5. Intellectual Property",
@@ -475,7 +527,8 @@
       "priority": "high",
       "sort_order": 52,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "5. Intellectual Property",
@@ -484,7 +537,8 @@
       "priority": "high",
       "sort_order": 53,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "5. Intellectual Property",
@@ -493,7 +547,8 @@
       "priority": "high",
       "sort_order": 54,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "6. Commercial, Markets & Reimbursement",
@@ -502,7 +557,8 @@
       "priority": "standard",
       "sort_order": 55,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "6. Commercial, Markets & Reimbursement",
@@ -511,7 +567,8 @@
       "priority": "standard",
       "sort_order": 56,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "6. Commercial, Markets & Reimbursement",
@@ -520,7 +577,8 @@
       "priority": "standard",
       "sort_order": 57,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "6. Commercial, Markets & Reimbursement",
@@ -529,7 +587,8 @@
       "priority": "standard",
       "sort_order": 58,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "6. Commercial, Markets & Reimbursement",
@@ -538,7 +597,8 @@
       "priority": "standard",
       "sort_order": 59,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "6. Commercial, Markets & Reimbursement",
@@ -547,7 +607,8 @@
       "priority": "standard",
       "sort_order": 60,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "6. Commercial, Markets & Reimbursement",
@@ -556,7 +617,8 @@
       "priority": "standard",
       "sort_order": 61,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "6. Commercial, Markets & Reimbursement",
@@ -565,7 +627,8 @@
       "priority": "standard",
       "sort_order": 62,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "6. Commercial, Markets & Reimbursement",
@@ -574,7 +637,8 @@
       "priority": "standard",
       "sort_order": 63,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "6. Commercial, Markets & Reimbursement",
@@ -583,7 +647,8 @@
       "priority": "standard",
       "sort_order": 64,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "6. Commercial, Markets & Reimbursement",
@@ -592,7 +657,8 @@
       "priority": "standard",
       "sort_order": 65,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "7. Financial",
@@ -601,7 +667,8 @@
       "priority": "high",
       "sort_order": 66,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "7. Financial",
@@ -610,7 +677,8 @@
       "priority": "high",
       "sort_order": 67,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "7. Financial",
@@ -619,7 +687,8 @@
       "priority": "high",
       "sort_order": 68,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "7. Financial",
@@ -628,7 +697,8 @@
       "priority": "high",
       "sort_order": 69,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "7. Financial",
@@ -637,7 +707,8 @@
       "priority": "high",
       "sort_order": 70,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "7. Financial",
@@ -646,7 +717,8 @@
       "priority": "high",
       "sort_order": 71,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "7. Financial",
@@ -655,7 +727,8 @@
       "priority": "high",
       "sort_order": 72,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "7. Financial",
@@ -664,7 +737,8 @@
       "priority": "high",
       "sort_order": 73,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "7. Financial",
@@ -673,7 +747,8 @@
       "priority": "high",
       "sort_order": 74,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "7. Financial",
@@ -682,7 +757,8 @@
       "priority": "high",
       "sort_order": 75,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "7. Financial",
@@ -691,7 +767,8 @@
       "priority": "high",
       "sort_order": 76,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "7. Financial",
@@ -700,7 +777,8 @@
       "priority": "high",
       "sort_order": 77,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "8. People & Team",
@@ -709,7 +787,8 @@
       "priority": "standard",
       "sort_order": 78,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "8. People & Team",
@@ -718,7 +797,8 @@
       "priority": "standard",
       "sort_order": 79,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "8. People & Team",
@@ -727,7 +807,8 @@
       "priority": "standard",
       "sort_order": 80,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "8. People & Team",
@@ -736,7 +817,8 @@
       "priority": "standard",
       "sort_order": 81,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "8. People & Team",
@@ -745,7 +827,8 @@
       "priority": "standard",
       "sort_order": 82,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "8. People & Team",
@@ -754,7 +837,8 @@
       "priority": "standard",
       "sort_order": 83,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "8. People & Team",
@@ -763,7 +847,8 @@
       "priority": "standard",
       "sort_order": 84,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "8. People & Team",
@@ -772,7 +857,8 @@
       "priority": "standard",
       "sort_order": 85,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "8. People & Team",
@@ -781,7 +867,8 @@
       "priority": "standard",
       "sort_order": 86,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "8. People & Team",
@@ -790,7 +877,8 @@
       "priority": "standard",
       "sort_order": 87,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "9. Legal & Material Contracts",
@@ -799,7 +887,8 @@
       "priority": "high",
       "sort_order": 88,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "9. Legal & Material Contracts",
@@ -808,7 +897,8 @@
       "priority": "high",
       "sort_order": 89,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "9. Legal & Material Contracts",
@@ -817,7 +907,8 @@
       "priority": "high",
       "sort_order": 90,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "9. Legal & Material Contracts",
@@ -826,7 +917,8 @@
       "priority": "high",
       "sort_order": 91,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "9. Legal & Material Contracts",
@@ -835,7 +927,8 @@
       "priority": "high",
       "sort_order": 92,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "9. Legal & Material Contracts",
@@ -844,7 +937,8 @@
       "priority": "high",
       "sort_order": 93,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "9. Legal & Material Contracts",
@@ -853,7 +947,8 @@
       "priority": "high",
       "sort_order": 94,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "9. Legal & Material Contracts",
@@ -862,7 +957,8 @@
       "priority": "high",
       "sort_order": 95,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "9. Legal & Material Contracts",
@@ -871,7 +967,8 @@
       "priority": "high",
       "sort_order": 96,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "9. Legal & Material Contracts",
@@ -880,7 +977,8 @@
       "priority": "high",
       "sort_order": 97,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "9. Legal & Material Contracts",
@@ -889,7 +987,8 @@
       "priority": "high",
       "sort_order": 98,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
@@ -898,7 +997,8 @@
       "priority": "medium",
       "sort_order": 99,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
@@ -907,7 +1007,8 @@
       "priority": "medium",
       "sort_order": 100,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
@@ -916,7 +1017,8 @@
       "priority": "medium",
       "sort_order": 101,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
@@ -925,7 +1027,8 @@
       "priority": "medium",
       "sort_order": 102,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
@@ -934,7 +1037,8 @@
       "priority": "medium",
       "sort_order": 103,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
@@ -943,7 +1047,8 @@
       "priority": "medium",
       "sort_order": 104,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
@@ -952,7 +1057,8 @@
       "priority": "medium",
       "sort_order": 105,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
@@ -961,7 +1067,8 @@
       "priority": "medium",
       "sort_order": 106,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
@@ -970,7 +1077,8 @@
       "priority": "medium",
       "sort_order": 107,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
@@ -979,7 +1087,8 @@
       "priority": "medium",
       "sort_order": 108,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "11. ESG, Anti-Bribery & HCP Compliance",
@@ -988,7 +1097,8 @@
       "priority": "standard",
       "sort_order": 109,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "11. ESG, Anti-Bribery & HCP Compliance",
@@ -997,7 +1107,8 @@
       "priority": "standard",
       "sort_order": 110,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "11. ESG, Anti-Bribery & HCP Compliance",
@@ -1006,7 +1117,8 @@
       "priority": "standard",
       "sort_order": 111,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "11. ESG, Anti-Bribery & HCP Compliance",
@@ -1015,7 +1127,8 @@
       "priority": "standard",
       "sort_order": 112,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "11. ESG, Anti-Bribery & HCP Compliance",
@@ -1024,7 +1137,8 @@
       "priority": "standard",
       "sort_order": 113,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "11. ESG, Anti-Bribery & HCP Compliance",
@@ -1033,7 +1147,8 @@
       "priority": "standard",
       "sort_order": 114,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "11. ESG, Anti-Bribery & HCP Compliance",
@@ -1042,7 +1157,8 @@
       "priority": "standard",
       "sort_order": 115,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "11. ESG, Anti-Bribery & HCP Compliance",
@@ -1051,7 +1167,8 @@
       "priority": "standard",
       "sort_order": 116,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "12. Tax & Zakat",
@@ -1060,7 +1177,8 @@
       "priority": "standard",
       "sort_order": 117,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "12. Tax & Zakat",
@@ -1069,7 +1187,8 @@
       "priority": "standard",
       "sort_order": 118,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "12. Tax & Zakat",
@@ -1078,7 +1197,8 @@
       "priority": "standard",
       "sort_order": 119,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "12. Tax & Zakat",
@@ -1087,7 +1207,8 @@
       "priority": "standard",
       "sort_order": 120,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "12. Tax & Zakat",
@@ -1096,7 +1217,8 @@
       "priority": "standard",
       "sort_order": 121,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "12. Tax & Zakat",
@@ -1105,7 +1227,8 @@
       "priority": "standard",
       "sort_order": 122,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "12. Tax & Zakat",
@@ -1114,7 +1237,8 @@
       "priority": "standard",
       "sort_order": 123,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "12. Tax & Zakat",
@@ -1123,7 +1247,8 @@
       "priority": "standard",
       "sort_order": 124,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
@@ -1132,7 +1257,8 @@
       "priority": "standard",
       "sort_order": 125,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
@@ -1141,7 +1267,8 @@
       "priority": "standard",
       "sort_order": 126,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
@@ -1150,7 +1277,8 @@
       "priority": "standard",
       "sort_order": 127,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
@@ -1159,7 +1287,8 @@
       "priority": "standard",
       "sort_order": 128,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
@@ -1168,7 +1297,8 @@
       "priority": "standard",
       "sort_order": 129,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
@@ -1177,7 +1307,8 @@
       "priority": "standard",
       "sort_order": 130,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
@@ -1186,7 +1317,8 @@
       "priority": "standard",
       "sort_order": 131,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
@@ -1195,7 +1327,8 @@
       "priority": "standard",
       "sort_order": 132,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
@@ -1204,7 +1337,8 @@
       "priority": "standard",
       "sort_order": 133,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
@@ -1213,7 +1347,8 @@
       "priority": "standard",
       "sort_order": 134,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
@@ -1222,7 +1357,8 @@
       "priority": "standard",
       "sort_order": 135,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
@@ -1231,7 +1367,8 @@
       "priority": "standard",
       "sort_order": 136,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": false
     },
     {
       "section": "14. Closing Information (AML / KYC)",
@@ -1240,7 +1377,8 @@
       "priority": "high",
       "sort_order": 137,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "14. Closing Information (AML / KYC)",
@@ -1249,7 +1387,8 @@
       "priority": "high",
       "sort_order": 138,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "14. Closing Information (AML / KYC)",
@@ -1258,7 +1397,8 @@
       "priority": "high",
       "sort_order": 139,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "14. Closing Information (AML / KYC)",
@@ -1267,7 +1407,8 @@
       "priority": "high",
       "sort_order": 140,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "14. Closing Information (AML / KYC)",
@@ -1276,7 +1417,8 @@
       "priority": "high",
       "sort_order": 141,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "14. Closing Information (AML / KYC)",
@@ -1285,7 +1427,8 @@
       "priority": "high",
       "sort_order": 142,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "14. Closing Information (AML / KYC)",
@@ -1294,7 +1437,8 @@
       "priority": "high",
       "sort_order": 143,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "14. Closing Information (AML / KYC)",
@@ -1303,7 +1447,8 @@
       "priority": "high",
       "sort_order": 144,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "14. Closing Information (AML / KYC)",
@@ -1312,7 +1457,8 @@
       "priority": "high",
       "sort_order": 145,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     },
     {
       "section": "14. Closing Information (AML / KYC)",
@@ -1321,7 +1467,8 @@
       "priority": "high",
       "sort_order": 146,
       "already_held": null,
-      "note_for_company": null
+      "note_for_company": null,
+      "adviser_restricted": true
     }
   ]
 }
