@@ -1,0 +1,28 @@
+-- ============================================================================
+-- 010: Add the `company` value to the user_role enum
+--
+-- This migration does ONE thing, deliberately, and it is the reason it is on
+-- its own rather than folded into 011.
+--
+-- `autoMigrate()` wraps every migration file in BEGIN/COMMIT. PostgreSQL 12+
+-- permits `ALTER TYPE ... ADD VALUE` inside a transaction block, but the new
+-- value cannot be USED in the same transaction that added it. Any statement in
+-- this file that referenced 'company' — an INSERT, a CHECK, a DEFAULT — would
+-- fail with "unsafe use of new value of enum type".
+--
+-- So: the value is added here and nowhere else, and no later migration inserts
+-- a row with role 'company'. Company users are created at runtime through the
+-- existing invite flow, long after this has committed. Runtime code is
+-- unaffected by the restriction.
+--
+-- Company-side capability is NOT expressed in this global role. It lives on the
+-- `company_users` membership record added in 011, which keeps `requireRole()`
+-- checks simple and keeps company users out of the fund permission matrix
+-- entirely (code brief §3.1).
+--
+-- Forward-only and idempotent: `IF NOT EXISTS` makes a re-run a no-op, and the
+-- value is never removed (PostgreSQL cannot drop an enum value; migration 007
+-- left 'consultant' in place for the same reason).
+-- ============================================================================
+
+ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'company';

@@ -3,11 +3,11 @@
  */
 import { Router } from 'express';
 import { pool } from '../db.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, rejectCompanyRole } from '../middleware/auth.js';
 import { logAudit } from '../services/audit.js';
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, rejectCompanyRole);
 
 // GET /funds — all users can see funds they have grants for; admins see all
 router.get('/', async (req, res) => {
@@ -41,6 +41,7 @@ router.get('/', async (req, res) => {
       createdAt: f.created_at,
     })));
   } catch (err) {
+    console.error('[funds] List error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -89,6 +90,7 @@ router.patch('/:id', requireRole('admin'), async (req, res) => {
     await logAudit({ action: 'fund.updated', userId: req.user.sub, resource: 'fund', resourceId: fund.id, detail: req.body, ip: req.ip });
     res.json(fund);
   } catch (err) {
+    console.error('[funds] Update error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -99,6 +101,7 @@ router.get('/categories', async (req, res) => {
     const { rows } = await pool.query(`SELECT * FROM document_categories ORDER BY sort_order`);
     res.json(rows);
   } catch (err) {
+    console.error('[funds] Categories error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

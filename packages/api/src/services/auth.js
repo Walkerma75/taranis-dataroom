@@ -31,13 +31,34 @@ export async function verifyPassword(hash, plain) {
 // JWT access tokens
 // ---------------------------------------------------------------------------
 
-export function signAccessToken(user) {
+/**
+ * Sign an access token.
+ *
+ * `extra` carries the claims the DD portal added:
+ *
+ *   companyId   the company a role-'company' user belongs to. Every
+ *               /api/company/* route resolves its scope from THIS claim and
+ *               never from a client-supplied id, which is what makes
+ *               cross-company access by id guessing impossible rather than
+ *               merely checked for.
+ *   companyRole the membership role, for convenience only. The authoritative
+ *               value is re-read from company_users on each request, so a
+ *               demotion takes effect immediately rather than at token expiry.
+ *   mfaPending  a deliberately crippled token issued to a company user who has
+ *               not yet enrolled in TOTP. It reaches the MFA enrolment
+ *               endpoints and nothing else (see requireAuth in
+ *               middleware/auth.js).
+ */
+export function signAccessToken(user, extra = {}) {
   return jwt.sign(
     {
       sub: user.id,
       email: user.email,
       role: user.role,
       name: user.display_name,
+      ...(extra.companyId ? { companyId: extra.companyId } : {}),
+      ...(extra.companyRole ? { companyRole: extra.companyRole } : {}),
+      ...(extra.mfaPending ? { mfaPending: true } : {}),
     },
     JWT_SECRET,
     { expiresIn: ACCESS_TOKEN_TTL }

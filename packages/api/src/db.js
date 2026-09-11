@@ -14,7 +14,7 @@ const sslConfig = (sslMode && sslMode !== 'disable')
   ? { rejectUnauthorized: false }
   : false;
 
-export const pool = new Pool({
+const realPool = new Pool({
   user: process.env.POSTGRES_USER || 'taranis',
   password: process.env.POSTGRES_PASSWORD || 'changeme_local_only',
   host: process.env.POSTGRES_HOST || 'localhost',
@@ -25,6 +25,32 @@ export const pool = new Pool({
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
 });
+
+let activePool = realPool;
+
+/**
+ * The pool every module imports. It is a thin facade rather than the `pg.Pool`
+ * itself so a test can swap the implementation underneath without touching a
+ * single call site — the same injection pattern the storage service uses.
+ *
+ * `pg.Pool` does not open a socket until the first query, so importing this
+ * module in a test costs nothing and connects to nothing.
+ */
+export const pool = {
+  query: (...args) => activePool.query(...args),
+  connect: (...args) => activePool.connect(...args),
+  end: (...args) => activePool.end(...args),
+};
+
+/** Swap in a fake pool. Tests only. */
+export function setPool(replacement) {
+  activePool = replacement;
+}
+
+/** Restore the real pool. */
+export function resetPool() {
+  activePool = realPool;
+}
 
 /**
  * Quick connectivity check — called once at startup.

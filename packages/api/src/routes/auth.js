@@ -22,9 +22,69 @@ import {
   hashToken,
 } from '../services/auth.js';
 import { logAudit } from '../services/audit.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireAuthForMfaEnrolment, requireRole } from '../middleware/auth.js';
+import { loadCompanyMembership } from '../services/companies.js';
 
 const router = Router();
+
+/**
+ * ONE STEP OF TOLERANCE EITHER SIDE OF NOW.
+ *
+ * otplib v12 defaults `window` to 0, which accepts only the code for the
+ * current 30-second step. Every authenticator app derives its codes from the
+ * DEVICE clock, so a phone thirty seconds out produces codes that are all
+ * rejected, in every app on that phone, with no clue as to why — which is
+ * exactly what AdrenoMed hit (HANDOVER-CW015 §2B) while a company on a
+ * correctly-set device enrolled without trouble.
+ *
+ * A window of 1 accepts the previous and next step: RFC 6238 §5.2 anticipates
+ * exactly this drift, and one step is what Google's own guidance recommends.
+ * The cost is that a captured code stays usable for at most ninety seconds
+ * rather than thirty, against a password the attacker must also hold; the
+ * benefit is that ordinary clock drift stops presenting as a broken account.
+ *
+ * Set once, at module level, so the login check and the enrolment check cannot
+ * drift apart — a tolerance applied at enrolment but not at login would let
+ * someone enrol and then be unable to sign in.
+ */
+authenticator.options = { window: 1 };
+
+/**
+ * Codes as people actually submit them.
+ *
+ * Authenticator apps display '123 456' and both copy-paste and hand-typing
+ * carry the space through. Rejecting that is rejecting a correct code for its
+ * punctuation. Non-digits are stripped rather than the string merely trimmed,
+ * because the space is in the middle.
+ */
+export function normaliseTotpCode(code) {
+  return String(code ?? '').replace(/\D/g, '');
+}
+
+/**
+ * MFA is MANDATORY for role `company` and unchanged (opt-in) for every other
+ * role. This is HANDOVER-C003 §5.5 and it is deliberate: forcing enrolment on
+ * live investor, advisor and viewer users mid-release would lock people out of
+ * a portal they are already using. Company users are all new, so there is no
+ * one to lock out.
+ */
+export function mfaIsMandatoryFor(role) {
+  return role === 'company';
+}
+
+/**
+ * Build the claims a token carries for this user. For a company user that
+ * means the `companyId` every /api/company/* route scopes itself from.
+ */
+async function claimsFor(user) {
+  if (user.role !== 'company') return {};
+  const membership = await loadCompanyMembership(user.id);
+  if (!membership) return {};
+  return {
+    companyId: membership.company_id,
+    companyRole: membership.company_role,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // POST /auth/login
@@ -74,7 +134,7 @@ router.post('/login', async (req, res) => {
       if (!totpCode) {
         return res.status(200).json({ mfaRequired: true, message: 'TOTP code required' });
       }
-      const validTotp = authenticator.check(totpCode, user.totp_secret);
+      const validTotp = authenticator.check(normaliseTotpCode(totpCode), user.totp_secret);
       if (!validTotp) {
         await recordFailedLogin(user.id);
         await logAudit({ action: 'login.failed', userId: user.id, detail: { reason: 'bad_totp' }, ip, userAgent: ua });
@@ -85,7 +145,38 @@ router.post('/login', async (req, res) => {
     // Success — issue tokens
     await clearFailedLogins(user.id);
 
-    const accessToken = signAccessToken(user);
+    // Mandatory MFA, company role only. A company user who has not enrolled
+    // gets a token that reaches the two MFA enrolment endpoints and nothing
+    // else, so they can complete enrolment in this same session but cannot see
+    // a single checklist item until they have.
+    if (mfaIsMandatoryFor(user.role) && !user.totp_verified) {
+      const enrolmentToken = signAccessToken(user, { mfaPending: true });
+      await logAudit({
+        action: 'login.success',
+        userId: user.id,
+        detail: { mfaEnrolmentRequired: true },
+        ip,
+        userAgent: ua,
+      });
+      // No refresh token: enrolment is a one-shot flow inside the 15-minute
+      // access token, and an mfaPending session must not be extendable.
+      return res.json({
+        accessToken: enrolmentToken,
+        mfaEnrolmentRequired: true,
+        message: 'Two-factor authentication must be set up before you can continue.',
+        user: {
+          id: user.id,
+          email: user.email,
+          displayName: user.display_name,
+          role: user.role,
+          mfaEnabled: false,
+          capabilities: user.capabilities || {},
+        },
+      });
+    }
+
+    const claims = await claimsFor(user);
+    const accessToken = signAccessToken(user, claims);
     const refreshToken = generateRefreshToken();
     await storeRefreshToken(user.id, refreshToken);
 
@@ -101,6 +192,9 @@ router.post('/login', async (req, res) => {
         role: user.role,
         mfaEnabled: !!user.totp_verified,
         capabilities: user.capabilities || {},
+        ...(claims.companyId
+          ? { companyId: claims.companyId, companyRole: claims.companyRole }
+          : {}),
       },
     });
   } catch (err) {
@@ -126,12 +220,16 @@ router.post('/refresh', async (req, res) => {
     const newRefresh = generateRefreshToken();
     await storeRefreshToken(record.uid, newRefresh);
 
-    const accessToken = signAccessToken({
+    // Claims are rebuilt from the database on every refresh, not copied from
+    // the old token. A company user moved, demoted or removed picks that up
+    // within one refresh cycle rather than never.
+    const user = {
       id: record.uid,
       email: record.email,
       role: record.role,
       display_name: record.display_name,
-    });
+    };
+    const accessToken = signAccessToken(user, await claimsFor(user));
 
     res.json({ accessToken, refreshToken: newRefresh });
   } catch (err) {
@@ -168,6 +266,10 @@ router.get('/me', requireAuth, async (req, res) => {
     );
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    // The web client branches its whole shell on this: role 'company' lands in
+    // the Company Portal and never renders fund navigation.
+    const membership = user.role === 'company' ? await loadCompanyMembership(user.id) : null;
+
     res.json({
       id: user.id,
       email: user.email,
@@ -177,8 +279,17 @@ router.get('/me', requireAuth, async (req, res) => {
       mfaEnabled: user.mfa_enabled,
       capabilities: user.capabilities || {},
       createdAt: user.created_at,
+      ...(membership
+        ? {
+            companyId: membership.company_id,
+            companyName: membership.legal_name,
+            companyRole: membership.company_role,
+            companyStatus: membership.company_status,
+          }
+        : {}),
     });
   } catch (err) {
+    console.error('[auth] Me error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -186,19 +297,43 @@ router.get('/me', requireAuth, async (req, res) => {
 // ---------------------------------------------------------------------------
 // POST /auth/mfa/setup — generate TOTP secret + QR code
 // ---------------------------------------------------------------------------
-router.post('/mfa/setup', requireAuth, async (req, res) => {
+// Uses requireAuthForMfaEnrolment so a company user holding an `mfaPending`
+// token can complete enrolment. Every other route rejects that token.
+//
+// IDEMPOTENT WHILE ENROLMENT IS IN PROGRESS. This used to mint a new secret on
+// every call and overwrite the stored one, so a page refresh, a second tab or
+// a second press of "Begin Setup" silently invalidated whatever the user had
+// already scanned. They then read codes off a dead entry and were told the code
+// was invalid, which is a trap that gets worse the harder someone tries — the
+// second half of HANDOVER-CW015 §2B.
+//
+// So an UNVERIFIED row is returned as it stands, QR and all. A fresh secret is
+// generated only when there is no row, or when the existing row is verified and
+// this is therefore a deliberate re-enrolment. Re-enrolment still overwrites,
+// which is the point of it; it is `/mfa/verify` that flips the row back to
+// verified, so a re-enrolment abandoned half way leaves the account with MFA
+// off rather than with a secret nobody holds.
+router.post('/mfa/setup', requireAuthForMfaEnrolment, async (req, res) => {
   try {
-    const secret = authenticator.generateSecret();
+    const { rows: [existing] } = await pool.query(
+      `SELECT totp_secret, totp_verified FROM user_mfa WHERE user_id = $1`,
+      [req.user.sub]
+    );
+
+    const reuse = Boolean(existing && existing.totp_secret && !existing.totp_verified);
+    const secret = reuse ? existing.totp_secret : authenticator.generateSecret();
     const otpauth = authenticator.keyuri(req.user.email, 'Taranis Data Room', secret);
     const qrDataUrl = await QRCode.toDataURL(otpauth);
 
-    // Upsert MFA record (not yet verified)
-    await pool.query(
-      `INSERT INTO user_mfa (user_id, totp_secret, totp_verified)
-       VALUES ($1, $2, false)
-       ON CONFLICT (user_id) DO UPDATE SET totp_secret = $2, totp_verified = false`,
-      [req.user.sub, secret]
-    );
+    if (!reuse) {
+      // Upsert MFA record (not yet verified)
+      await pool.query(
+        `INSERT INTO user_mfa (user_id, totp_secret, totp_verified)
+         VALUES ($1, $2, false)
+         ON CONFLICT (user_id) DO UPDATE SET totp_secret = $2, totp_verified = false`,
+        [req.user.sub, secret]
+      );
+    }
 
     res.json({ secret, qrCode: qrDataUrl });
   } catch (err) {
@@ -210,8 +345,8 @@ router.post('/mfa/setup', requireAuth, async (req, res) => {
 // ---------------------------------------------------------------------------
 // POST /auth/mfa/verify — confirm TOTP code to enable MFA
 // ---------------------------------------------------------------------------
-router.post('/mfa/verify', requireAuth, async (req, res) => {
-  const { code } = req.body;
+router.post('/mfa/verify', requireAuthForMfaEnrolment, async (req, res) => {
+  const code = normaliseTotpCode((req.body || {}).code);
   if (!code) return res.status(400).json({ error: 'TOTP code required' });
 
   try {
@@ -242,6 +377,39 @@ router.post('/mfa/verify', requireAuth, async (req, res) => {
 
     await logAudit({ action: 'mfa.enabled', userId: req.user.sub, ip: req.ip });
 
+    // If this was an enrolment forced at login (company role), hand back a full
+    // session now rather than making the user log in a second time. Their token
+    // up to this point could reach nothing but these two endpoints.
+    if (req.user.mfaPending) {
+      const { rows: [user] } = await pool.query(
+        `SELECT id, email, display_name, role, COALESCE(capabilities, '{}') AS capabilities
+         FROM users WHERE id = $1`,
+        [req.user.sub]
+      );
+      const claims = await claimsFor(user);
+      const accessToken = signAccessToken(user, claims);
+      const refreshToken = generateRefreshToken();
+      await storeRefreshToken(user.id, refreshToken);
+
+      return res.json({
+        message: 'MFA enabled',
+        recoveryCodes,
+        accessToken,
+        refreshToken,
+        user: {
+          id: user.id,
+          email: user.email,
+          displayName: user.display_name,
+          role: user.role,
+          mfaEnabled: true,
+          capabilities: user.capabilities || {},
+          ...(claims.companyId
+            ? { companyId: claims.companyId, companyRole: claims.companyRole }
+            : {}),
+        },
+      });
+    }
+
     res.json({ message: 'MFA enabled', recoveryCodes });
   } catch (err) {
     console.error('[auth] MFA verify error:', err);
@@ -258,6 +426,10 @@ router.post('/invite', requireAuth, requireRole('admin'), async (req, res) => {
     return res.status(400).json({ error: 'Email and display name are required' });
   }
 
+  // 'company' is deliberately absent. A company user without a company_users
+  // membership row would hold a role that grants nothing and scopes to nothing,
+  // so company invites go through POST /companies/:id/users, which creates the
+  // user and the membership together.
   const validRoles = ['investor', 'advisor', 'viewer', 'admin'];
   if (role && !validRoles.includes(role)) {
     return res.status(400).json({ error: 'Invalid role' });
@@ -485,6 +657,7 @@ router.post('/change-password', requireAuth, async (req, res) => {
 
     res.json({ message: 'Password changed. Please log in again.' });
   } catch (err) {
+    console.error('[auth] Change password error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

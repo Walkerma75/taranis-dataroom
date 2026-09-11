@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { hasCap } from '../components/AppLayout.jsx';
+import DueDiligencePanel from '../components/DueDiligencePanel.jsx';
 
 const { Title, Text } = Typography;
 
@@ -18,8 +19,15 @@ export default function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [stats, setStats] = useState({ users: 0, funds: [], documents: 0, unreadNotices: 0 });
+  const [ddSummary, setDdSummary] = useState(null);
 
   const canManageUsers = hasCap(user, 'canManageUsers');
+
+  // Admins only, and the check is on the role rather than on a capability.
+  // `/dd-summary` answers 403 to everyone else including advisors and viewers,
+  // who do see Companies and Review Queue in the nav, so calling it for them
+  // would put a failed request on every dashboard load (HANDOVER-C020 D-notes).
+  const isAdmin = user?.role === 'admin';
 
   useEffect(() => {
     async function loadStats() {
@@ -54,6 +62,17 @@ export default function DashboardPage() {
     }
     loadStats();
   }, [user, canManageUsers]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    async function loadDd() {
+      try {
+        const res = await api.get('/dd-summary');
+        if (res.ok) setDdSummary(await res.json());
+      } catch { /* the panel simply does not appear */ }
+    }
+    loadDd();
+  }, [isAdmin]);
 
   return (
     <div>
@@ -108,6 +127,8 @@ export default function DashboardPage() {
           </Col>
         )}
       </Row>
+
+      {isAdmin && <DueDiligencePanel summary={ddSummary} />}
 
       <Title level={4} style={{ marginTop: 32 }}>Your Funds</Title>
       <Row gutter={[16, 16]}>

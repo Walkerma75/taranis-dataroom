@@ -1,0 +1,1327 @@
+{
+  "source": "Biotech_KSA_IRL_Master_Seed_v1_06Aug2026.xlsx",
+  "sheet": "IRL master",
+  "itemCount": 146,
+  "sectionCount": 14,
+  "priorityCounts": {
+    "medium": 43,
+    "standard": 61,
+    "high": 42
+  },
+  "items": [
+    {
+      "section": "1. Corporate & Structure",
+      "ref": "1.1",
+      "description": "Certificate of incorporation, M&A and any subsequent amendments",
+      "priority": "medium",
+      "sort_order": 1,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "1. Corporate & Structure",
+      "ref": "1.2",
+      "description": "Good-standing certificate for each group company, dated within 60 days",
+      "priority": "medium",
+      "sort_order": 2,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "1. Corporate & Structure",
+      "ref": "1.3",
+      "description": "Group structure chart with %-ownership and dates",
+      "priority": "medium",
+      "sort_order": 3,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "1. Corporate & Structure",
+      "ref": "1.4",
+      "description": "Current fully-diluted capitalisation table (ordinary, preferred, options, warrants, SAFEs, notes, vesting)",
+      "priority": "medium",
+      "sort_order": 4,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "1. Corporate & Structure",
+      "ref": "1.5",
+      "description": "Historic capitalisation movement — each round (date, amount, lead, pre/post valuation, terms)",
+      "priority": "medium",
+      "sort_order": 5,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "1. Corporate & Structure",
+      "ref": "1.6",
+      "description": "Shareholders / investors-rights / voting / drag-tag agreements and side letters",
+      "priority": "medium",
+      "sort_order": 6,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "1. Corporate & Structure",
+      "ref": "1.7",
+      "description": "Constitution as currently in force, including class rights and reserved matters",
+      "priority": "medium",
+      "sort_order": 7,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "1. Corporate & Structure",
+      "ref": "1.8",
+      "description": "Board composition — members, observers, terms, quorum, committees",
+      "priority": "medium",
+      "sort_order": 8,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "1. Corporate & Structure",
+      "ref": "1.9",
+      "description": "Board and committee minutes for the last 24 months",
+      "priority": "medium",
+      "sort_order": 9,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "1. Corporate & Structure",
+      "ref": "1.10",
+      "description": "Powers of attorney outstanding; bank signatory list and authority limits",
+      "priority": "medium",
+      "sort_order": 10,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "1. Corporate & Structure",
+      "ref": "1.11",
+      "description": "Beneficial-ownership and corporate-registry filings for the last 3 years",
+      "priority": "medium",
+      "sort_order": 11,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "1. Corporate & Structure",
+      "ref": "1.12",
+      "description": "All corporate, trading and brand names used in any jurisdiction",
+      "priority": "medium",
+      "sort_order": 12,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "2. Programmes & Scientific Pipeline",
+      "ref": "2.1",
+      "description": "Pipeline overview — all assets, indications, stage, lead vs follow-on",
+      "priority": "standard",
+      "sort_order": 13,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "2. Programmes & Scientific Pipeline",
+      "ref": "2.2",
+      "description": "Target Product Profile for the lead asset",
+      "priority": "standard",
+      "sort_order": 14,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "2. Programmes & Scientific Pipeline",
+      "ref": "2.3",
+      "description": "Target validation package — biological rationale, genetic evidence, druggability",
+      "priority": "standard",
+      "sort_order": 15,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "2. Programmes & Scientific Pipeline",
+      "ref": "2.4",
+      "description": "Mechanism of Action — supporting data, dose-response, selectivity, off-target",
+      "priority": "standard",
+      "sort_order": 16,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "2. Programmes & Scientific Pipeline",
+      "ref": "2.5",
+      "description": "Preclinical PK/PD package",
+      "priority": "standard",
+      "sort_order": 17,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "2. Programmes & Scientific Pipeline",
+      "ref": "2.6",
+      "description": "Preclinical toxicology — GLP summaries, NOAEL, IND-enabling tox",
+      "priority": "standard",
+      "sort_order": 18,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "2. Programmes & Scientific Pipeline",
+      "ref": "2.7",
+      "description": "Biomarker strategy — bio-ADM / DPP3 and any companion diagnostics",
+      "priority": "standard",
+      "sort_order": 19,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "2. Programmes & Scientific Pipeline",
+      "ref": "2.8",
+      "description": "Translational data — preclinical-to-clinical predictive validity",
+      "priority": "standard",
+      "sort_order": 20,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "2. Programmes & Scientific Pipeline",
+      "ref": "2.9",
+      "description": "Scientific Advisory Board composition and contributions",
+      "priority": "standard",
+      "sort_order": 21,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "2. Programmes & Scientific Pipeline",
+      "ref": "2.10",
+      "description": "Peer-reviewed publications, abstracts and posters (last 3 years)",
+      "priority": "standard",
+      "sort_order": 22,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "2. Programmes & Scientific Pipeline",
+      "ref": "2.11",
+      "description": "Three KOL contacts for the deal team to speak with directly",
+      "priority": "standard",
+      "sort_order": 23,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "2. Programmes & Scientific Pipeline",
+      "ref": "2.12",
+      "description": "Competitive scientific landscape by mechanism and indication",
+      "priority": "standard",
+      "sort_order": 24,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "3. Clinical Development & Strategy",
+      "ref": "3.1",
+      "description": "IND/CTA status by indication; submissions and acceptance letters",
+      "priority": "medium",
+      "sort_order": 25,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "3. Clinical Development & Strategy",
+      "ref": "3.2",
+      "description": "Trial register listings and recruitment status",
+      "priority": "medium",
+      "sort_order": 26,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "3. Clinical Development & Strategy",
+      "ref": "3.3",
+      "description": "Protocol synopses for ongoing and planned trials (BOOST Phase 3)",
+      "priority": "medium",
+      "sort_order": 27,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "3. Clinical Development & Strategy",
+      "ref": "3.4",
+      "description": "Regulator interactions — pre-IND, EMA Scientific Advice, FDA Type B/C",
+      "priority": "medium",
+      "sort_order": 28,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "3. Clinical Development & Strategy",
+      "ref": "3.5",
+      "description": "Regulatory designations granted",
+      "priority": "medium",
+      "sort_order": 29,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "3. Clinical Development & Strategy",
+      "ref": "3.6",
+      "description": "Investigator network and MENA site strategy",
+      "priority": "medium",
+      "sort_order": 30,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "3. Clinical Development & Strategy",
+      "ref": "3.7",
+      "description": "Trial Master File state and third-party audit findings",
+      "priority": "medium",
+      "sort_order": 31,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "3. Clinical Development & Strategy",
+      "ref": "3.8",
+      "description": "Data Safety Monitoring Board composition and reports",
+      "priority": "medium",
+      "sort_order": 32,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "3. Clinical Development & Strategy",
+      "ref": "3.9",
+      "description": "Clinical Operations and CRO engagements",
+      "priority": "medium",
+      "sort_order": 33,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "3. Clinical Development & Strategy",
+      "ref": "3.10",
+      "description": "Clinical-development budget and timeline to next milestone",
+      "priority": "medium",
+      "sort_order": 34,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "3. Clinical Development & Strategy",
+      "ref": "3.11",
+      "description": "Adverse event / serious adverse event summary across trials",
+      "priority": "medium",
+      "sort_order": 35,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "4. CMC & Manufacturing",
+      "ref": "4.1",
+      "description": "Process route and route maturity",
+      "priority": "medium",
+      "sort_order": 36,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "4. CMC & Manufacturing",
+      "ref": "4.2",
+      "description": "Drug substance specification and batch results",
+      "priority": "medium",
+      "sort_order": 37,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "4. CMC & Manufacturing",
+      "ref": "4.3",
+      "description": "Drug product specification, stability and shelf-life",
+      "priority": "medium",
+      "sort_order": 38,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "4. CMC & Manufacturing",
+      "ref": "4.4",
+      "description": "Manufacturing scale and GMP status at each scale",
+      "priority": "medium",
+      "sort_order": 39,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "4. CMC & Manufacturing",
+      "ref": "4.5",
+      "description": "Supplier qualification and audit history",
+      "priority": "medium",
+      "sort_order": 40,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "4. CMC & Manufacturing",
+      "ref": "4.6",
+      "description": "CMO/CDMO relationships and agreements",
+      "priority": "medium",
+      "sort_order": 41,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "4. CMC & Manufacturing",
+      "ref": "4.7",
+      "description": "Technology-transfer readiness",
+      "priority": "medium",
+      "sort_order": 42,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "4. CMC & Manufacturing",
+      "ref": "4.8",
+      "description": "Saudi/MENA manufacturing plan — site, capex, timeline, local content",
+      "priority": "medium",
+      "sort_order": 43,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "4. CMC & Manufacturing",
+      "ref": "4.9",
+      "description": "CMC regulatory submissions — IMPD, IND CMC, Module 3 readiness",
+      "priority": "medium",
+      "sort_order": 44,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "4. CMC & Manufacturing",
+      "ref": "4.10",
+      "description": "Quality management system — change control, deviations, batch release",
+      "priority": "medium",
+      "sort_order": 45,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "5. Intellectual Property",
+      "ref": "5.1",
+      "description": "Patent estate schedule by jurisdiction with renewal calendar",
+      "priority": "high",
+      "sort_order": 46,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "5. Intellectual Property",
+      "ref": "5.2",
+      "description": "Patent term, SPC/PTE eligibility and expiry timeline",
+      "priority": "high",
+      "sort_order": 47,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "5. Intellectual Property",
+      "ref": "5.3",
+      "description": "Composition-of-matter vs method-of-use coverage analysis",
+      "priority": "high",
+      "sort_order": 48,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "5. Intellectual Property",
+      "ref": "5.4",
+      "description": "KSA and GCC patent filings — current and planned",
+      "priority": "high",
+      "sort_order": 49,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "5. Intellectual Property",
+      "ref": "5.5",
+      "description": "Freedom-to-Operate analysis",
+      "priority": "high",
+      "sort_order": 50,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "5. Intellectual Property",
+      "ref": "5.6",
+      "description": "Inbound IP licences and obligations",
+      "priority": "high",
+      "sort_order": 51,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "5. Intellectual Property",
+      "ref": "5.7",
+      "description": "Outbound licences and options granted",
+      "priority": "high",
+      "sort_order": 52,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "5. Intellectual Property",
+      "ref": "5.8",
+      "description": "Material Transfer Agreements and academic-collaboration IP",
+      "priority": "high",
+      "sort_order": 53,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "5. Intellectual Property",
+      "ref": "5.9",
+      "description": "Inventor and employee IP assignments (chain of title)",
+      "priority": "high",
+      "sort_order": 54,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "6. Commercial, Markets & Reimbursement",
+      "ref": "6.1",
+      "description": "Lead indication — disease overview and addressable population (global and MENA)",
+      "priority": "standard",
+      "sort_order": 55,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "6. Commercial, Markets & Reimbursement",
+      "ref": "6.2",
+      "description": "Standard of care across major markets",
+      "priority": "standard",
+      "sort_order": 56,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "6. Commercial, Markets & Reimbursement",
+      "ref": "6.3",
+      "description": "Competitive pipeline by indication",
+      "priority": "standard",
+      "sort_order": 57,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "6. Commercial, Markets & Reimbursement",
+      "ref": "6.4",
+      "description": "Differentiation of Target Product Profile vs competitors",
+      "priority": "standard",
+      "sort_order": 58,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "6. Commercial, Markets & Reimbursement",
+      "ref": "6.5",
+      "description": "Pricing benchmarks (KSA, GCC, US, EU)",
+      "priority": "standard",
+      "sort_order": 59,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "6. Commercial, Markets & Reimbursement",
+      "ref": "6.6",
+      "description": "Reimbursement landscape incl. KSA Council of Health Insurance",
+      "priority": "standard",
+      "sort_order": 60,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "6. Commercial, Markets & Reimbursement",
+      "ref": "6.7",
+      "description": "NUPCO and government tender potential",
+      "priority": "standard",
+      "sort_order": 61,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "6. Commercial, Markets & Reimbursement",
+      "ref": "6.8",
+      "description": "KSA/MENA distribution partnerships",
+      "priority": "standard",
+      "sort_order": 62,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "6. Commercial, Markets & Reimbursement",
+      "ref": "6.9",
+      "description": "Partnering history and benchmarks",
+      "priority": "standard",
+      "sort_order": 63,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "6. Commercial, Markets & Reimbursement",
+      "ref": "6.10",
+      "description": "Commercial launch plan",
+      "priority": "standard",
+      "sort_order": 64,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "6. Commercial, Markets & Reimbursement",
+      "ref": "6.11",
+      "description": "Five case studies / patient stories / KOL endorsements",
+      "priority": "standard",
+      "sort_order": 65,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "7. Financial",
+      "ref": "7.1",
+      "description": "Audited financial statements for the last 3 years",
+      "priority": "high",
+      "sort_order": 66,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "7. Financial",
+      "ref": "7.2",
+      "description": "Monthly P&L, balance sheet and cash-flow for the last 24 months",
+      "priority": "high",
+      "sort_order": 67,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "7. Financial",
+      "ref": "7.3",
+      "description": "Three-statement forecast for the next 24-36 months (editable Excel)",
+      "priority": "high",
+      "sort_order": 68,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "7. Financial",
+      "ref": "7.4",
+      "description": "Runway analysis — cash, burn, runway to next milestone",
+      "priority": "high",
+      "sort_order": 69,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "7. Financial",
+      "ref": "7.5",
+      "description": "Capitalisation history — each round with lead, valuation, terms",
+      "priority": "high",
+      "sort_order": 70,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "7. Financial",
+      "ref": "7.6",
+      "description": "Schedule of indebtedness — venture debt, convertibles, covenants",
+      "priority": "high",
+      "sort_order": 71,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "7. Financial",
+      "ref": "7.7",
+      "description": "Banking relationships, signatories and balances",
+      "priority": "high",
+      "sort_order": 72,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "7. Financial",
+      "ref": "7.8",
+      "description": "Accounting policies (R&D capitalisation, revenue recognition, SBP)",
+      "priority": "high",
+      "sort_order": 73,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "7. Financial",
+      "ref": "7.9",
+      "description": "Internal controls description and any SOC reports",
+      "priority": "high",
+      "sort_order": 74,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "7. Financial",
+      "ref": "7.10",
+      "description": "Trial balance at most recent month-end",
+      "priority": "high",
+      "sort_order": 75,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "7. Financial",
+      "ref": "7.11",
+      "description": "Detailed clinical-development budget by programme and quarter",
+      "priority": "high",
+      "sort_order": 76,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "7. Financial",
+      "ref": "7.12",
+      "description": "Cap table on a fully-diluted basis as it would look post-investment",
+      "priority": "high",
+      "sort_order": 77,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "8. People & Team",
+      "ref": "8.1",
+      "description": "CVs / biographies for each founder incl. prior ventures and matters",
+      "priority": "standard",
+      "sort_order": 78,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "8. People & Team",
+      "ref": "8.2",
+      "description": "CVs for senior team (CSO, CMO, Head of Clinical, Head of CMC, CFO)",
+      "priority": "standard",
+      "sort_order": 79,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "8. People & Team",
+      "ref": "8.3",
+      "description": "Headcount by function and geography (24 months + 12-month plan)",
+      "priority": "standard",
+      "sort_order": 80,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "8. People & Team",
+      "ref": "8.4",
+      "description": "Compensation philosophy, option pool and vesting",
+      "priority": "standard",
+      "sort_order": 81,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "8. People & Team",
+      "ref": "8.5",
+      "description": "Standard and executive employment contracts; restrictive covenants",
+      "priority": "standard",
+      "sort_order": 82,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "8. People & Team",
+      "ref": "8.6",
+      "description": "Founders vesting status, acceleration and IP assignments",
+      "priority": "standard",
+      "sort_order": 83,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "8. People & Team",
+      "ref": "8.7",
+      "description": "Active or pending employment disputes",
+      "priority": "standard",
+      "sort_order": 84,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "8. People & Team",
+      "ref": "8.8",
+      "description": "Permission for third-party background checks",
+      "priority": "standard",
+      "sort_order": 85,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "8. People & Team",
+      "ref": "8.9",
+      "description": "Voluntary attrition rate and engagement surveys",
+      "priority": "standard",
+      "sort_order": 86,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "8. People & Team",
+      "ref": "8.10",
+      "description": "Planned Saudi team composition and Saudisation targets",
+      "priority": "standard",
+      "sort_order": 87,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "9. Legal & Material Contracts",
+      "ref": "9.1",
+      "description": "Schedule of material contracts (top 20 by value) with key-term flags",
+      "priority": "high",
+      "sort_order": 88,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "9. Legal & Material Contracts",
+      "ref": "9.2",
+      "description": "Copies of the top contracts identified",
+      "priority": "high",
+      "sort_order": 89,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "9. Legal & Material Contracts",
+      "ref": "9.3",
+      "description": "In-licence and out-licence agreements",
+      "priority": "high",
+      "sort_order": 90,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "9. Legal & Material Contracts",
+      "ref": "9.4",
+      "description": "Collaboration agreements with pharma partners",
+      "priority": "high",
+      "sort_order": 91,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "9. Legal & Material Contracts",
+      "ref": "9.5",
+      "description": "Schedule of registered IP (trademarks, designs, domains)",
+      "priority": "high",
+      "sort_order": 92,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "9. Legal & Material Contracts",
+      "ref": "9.6",
+      "description": "Confirmation of ownership of unregistered IP",
+      "priority": "high",
+      "sort_order": 93,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "9. Legal & Material Contracts",
+      "ref": "9.7",
+      "description": "Active or threatened litigation, arbitration or mediation",
+      "priority": "high",
+      "sort_order": 94,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "9. Legal & Material Contracts",
+      "ref": "9.8",
+      "description": "Material disputes in the last 5 years",
+      "priority": "high",
+      "sort_order": 95,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "9. Legal & Material Contracts",
+      "ref": "9.9",
+      "description": "Insurance schedule (D&O, clinical-trial, product liability, cyber)",
+      "priority": "high",
+      "sort_order": 96,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "9. Legal & Material Contracts",
+      "ref": "9.10",
+      "description": "Property leases in force",
+      "priority": "high",
+      "sort_order": 97,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "9. Legal & Material Contracts",
+      "ref": "9.11",
+      "description": "Any material breach of law/regulation in the last 5 years",
+      "priority": "high",
+      "sort_order": 98,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
+      "ref": "10.1",
+      "description": "Schedule of regulatory submissions and authorisations by jurisdiction",
+      "priority": "medium",
+      "sort_order": 99,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
+      "ref": "10.2",
+      "description": "Pre-IND, Scientific Advice and Type B/C meeting record",
+      "priority": "medium",
+      "sort_order": 100,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
+      "ref": "10.3",
+      "description": "Regulatory designations (Fast Track etc.)",
+      "priority": "medium",
+      "sort_order": 101,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
+      "ref": "10.4",
+      "description": "SFDA pathway and timeline",
+      "priority": "medium",
+      "sort_order": 102,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
+      "ref": "10.5",
+      "description": "GxP audit history (GLP, GCP, GMP)",
+      "priority": "medium",
+      "sort_order": 103,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
+      "ref": "10.6",
+      "description": "Pharmacovigilance system master file",
+      "priority": "medium",
+      "sort_order": 104,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
+      "ref": "10.7",
+      "description": "Manufacturing licences (MIA, GMP certificates)",
+      "priority": "medium",
+      "sort_order": 105,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
+      "ref": "10.8",
+      "description": "Import/export licences for controlled substances (if applicable)",
+      "priority": "medium",
+      "sort_order": 106,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
+      "ref": "10.9",
+      "description": "Regulator enforcement matters",
+      "priority": "medium",
+      "sort_order": 107,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "10. Regulatory (SFDA, FDA, EMA, GxP)",
+      "ref": "10.10",
+      "description": "Regulatory roadmap for the next 24 months",
+      "priority": "medium",
+      "sort_order": 108,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "11. ESG, Anti-Bribery & HCP Compliance",
+      "ref": "11.1",
+      "description": "ESG policy and any sustainability/impact reporting",
+      "priority": "standard",
+      "sort_order": 109,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "11. ESG, Anti-Bribery & HCP Compliance",
+      "ref": "11.2",
+      "description": "Scope 1 and Scope 2 emissions; biosafety and waste plans",
+      "priority": "standard",
+      "sort_order": 110,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "11. ESG, Anti-Bribery & HCP Compliance",
+      "ref": "11.3",
+      "description": "Workforce diversity and pay-equity information",
+      "priority": "standard",
+      "sort_order": 111,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "11. ESG, Anti-Bribery & HCP Compliance",
+      "ref": "11.4",
+      "description": "Clinical trial ethics framework (IRB/EC approvals, consent)",
+      "priority": "standard",
+      "sort_order": 112,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "11. ESG, Anti-Bribery & HCP Compliance",
+      "ref": "11.5",
+      "description": "Animal welfare and biosafety (IACUC, 3Rs)",
+      "priority": "standard",
+      "sort_order": 113,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "11. ESG, Anti-Bribery & HCP Compliance",
+      "ref": "11.6",
+      "description": "Anti-bribery and anti-corruption policies and training",
+      "priority": "standard",
+      "sort_order": 114,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "11. ESG, Anti-Bribery & HCP Compliance",
+      "ref": "11.7",
+      "description": "Healthcare Professional payment policy and transparency reporting",
+      "priority": "standard",
+      "sort_order": 115,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "11. ESG, Anti-Bribery & HCP Compliance",
+      "ref": "11.8",
+      "description": "Any material ESG controversies in the last 5 years",
+      "priority": "standard",
+      "sort_order": 116,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "12. Tax & Zakat",
+      "ref": "12.1",
+      "description": "Tax residency and substance of each group entity",
+      "priority": "standard",
+      "sort_order": 117,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "12. Tax & Zakat",
+      "ref": "12.2",
+      "description": "Filed tax returns for the last 3 years",
+      "priority": "standard",
+      "sort_order": 118,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "12. Tax & Zakat",
+      "ref": "12.3",
+      "description": "Open tax audits, disputes and assessments",
+      "priority": "standard",
+      "sort_order": 119,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "12. Tax & Zakat",
+      "ref": "12.4",
+      "description": "Transfer-pricing policy and related-party schedule",
+      "priority": "standard",
+      "sort_order": 120,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "12. Tax & Zakat",
+      "ref": "12.5",
+      "description": "KSA withholding tax exposures and treaty positions",
+      "priority": "standard",
+      "sort_order": 121,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "12. Tax & Zakat",
+      "ref": "12.6",
+      "description": "Zakat assessment status and ZATCA filings",
+      "priority": "standard",
+      "sort_order": 122,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "12. Tax & Zakat",
+      "ref": "12.7",
+      "description": "VAT registration and compliance across jurisdictions",
+      "priority": "standard",
+      "sort_order": 123,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "12. Tax & Zakat",
+      "ref": "12.8",
+      "description": "Any pre-closing reorganisation contemplated",
+      "priority": "standard",
+      "sort_order": 124,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
+      "ref": "13.1",
+      "description": "Manufacturing localisation plan — phased, local content, capex, timeline",
+      "priority": "standard",
+      "sort_order": 125,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
+      "ref": "13.2",
+      "description": "Site selection documentation and signed lease/option",
+      "priority": "standard",
+      "sort_order": 126,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
+      "ref": "13.3",
+      "description": "Local manufacturing partnership — signed LOI/MoU with Saudi CMO/CDMO",
+      "priority": "standard",
+      "sort_order": 127,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
+      "ref": "13.4",
+      "description": "Technology and IP transfer plan",
+      "priority": "standard",
+      "sort_order": 128,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
+      "ref": "13.5",
+      "description": "Saudisation plan — jobs, %, leadership, career pathways",
+      "priority": "standard",
+      "sort_order": 129,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
+      "ref": "13.6",
+      "description": "Academic partnerships — signed MoUs/LOIs (KAUST, KACST, KFSHRC etc.)",
+      "priority": "standard",
+      "sort_order": 130,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
+      "ref": "13.7",
+      "description": "Local supply chain plan and identified Saudi suppliers",
+      "priority": "standard",
+      "sort_order": 131,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
+      "ref": "13.8",
+      "description": "NUPCO and government procurement engagement",
+      "priority": "standard",
+      "sort_order": 132,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
+      "ref": "13.9",
+      "description": "PIF / Lifera engagement",
+      "priority": "standard",
+      "sort_order": 133,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
+      "ref": "13.10",
+      "description": "Vision 2030 / NBS alignment narrative",
+      "priority": "standard",
+      "sort_order": 134,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
+      "ref": "13.11",
+      "description": "Localisation timeline — first 18 months with accountable persons",
+      "priority": "standard",
+      "sort_order": 135,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "13. Localisation & Vision 2030 (HELIX8 Extension)",
+      "ref": "13.12",
+      "description": "Critical Success Factors and risk mitigation",
+      "priority": "standard",
+      "sort_order": 136,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "14. Closing Information (AML / KYC)",
+      "ref": "14.1",
+      "description": "Legal name, registration number, registered office and nature of business",
+      "priority": "high",
+      "sort_order": 137,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "14. Closing Information (AML / KYC)",
+      "ref": "14.2",
+      "description": "Identification documents for each director and officer",
+      "priority": "high",
+      "sort_order": 138,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "14. Closing Information (AML / KYC)",
+      "ref": "14.3",
+      "description": "Identification of all beneficial owners with >=10% interest",
+      "priority": "high",
+      "sort_order": 139,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "14. Closing Information (AML / KYC)",
+      "ref": "14.4",
+      "description": "Source of funds / source of wealth for major shareholders",
+      "priority": "high",
+      "sort_order": 140,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "14. Closing Information (AML / KYC)",
+      "ref": "14.5",
+      "description": "Sanctions, PEP and adverse-media declaration for each principal",
+      "priority": "high",
+      "sort_order": 141,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "14. Closing Information (AML / KYC)",
+      "ref": "14.6",
+      "description": "Most recent shareholder list certified by company secretary/registrar",
+      "priority": "high",
+      "sort_order": 142,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "14. Closing Information (AML / KYC)",
+      "ref": "14.7",
+      "description": "Beneficial-owner declaration form (Taranis/J.AWAN template)",
+      "priority": "high",
+      "sort_order": 143,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "14. Closing Information (AML / KYC)",
+      "ref": "14.8",
+      "description": "Confirmation company is not on UN/OFAC/EU/UK/KSA sanctions lists",
+      "priority": "high",
+      "sort_order": 144,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "14. Closing Information (AML / KYC)",
+      "ref": "14.9",
+      "description": "Bank account details for receipt of investment proceeds",
+      "priority": "high",
+      "sort_order": 145,
+      "already_held": null,
+      "note_for_company": null
+    },
+    {
+      "section": "14. Closing Information (AML / KYC)",
+      "ref": "14.10",
+      "description": "Authorised signatory list with specimen signatures and authority limits",
+      "priority": "high",
+      "sort_order": 146,
+      "already_held": null,
+      "note_for_company": null
+    }
+  ]
+}

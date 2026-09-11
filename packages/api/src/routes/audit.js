@@ -3,10 +3,10 @@
  */
 import { Router } from 'express';
 import { pool } from '../db.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, rejectCompanyRole } from '../middleware/auth.js';
 
 const router = Router();
-router.use(requireAuth, requireRole('admin'));
+router.use(requireAuth, rejectCompanyRole, requireRole('admin'));
 
 // GET /audit?action=...&userId=...&resource=...&page=1&limit=50
 router.get('/', async (req, res) => {
@@ -69,6 +69,7 @@ router.get('/actions', async (_req, res) => {
     );
     res.json(rows.map((r) => r.action));
   } catch (err) {
+    console.error('[audit] Actions error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

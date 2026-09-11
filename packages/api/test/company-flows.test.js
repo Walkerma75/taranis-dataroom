@@ -1,0 +1,1545 @@
+/**
+ * Submission, status and activation flows, driven through the real routers.
+ *
+ * These are the acceptance tests HANDOVER-CW004 §4 names after the isolation
+ * ones: batches atomic, staged versus submitted enforced, attention_needed
+ * refused without a note, and activation impossible without both gates.
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import companyPortalRoutes from '../src/routes/company-portal.js';
+import companyRoutes, { companyFilesRouter, reviewQueueRouter } from '../src/routes/companies.js';
+
+import {
+  fakePool,
+  membershipRow,
+  membershipHandler,
+  tokenFor,
+  startTestServer,
+} from './helpers/test-app.js';
+
+const COMPANY_A = '11111111-1111-4111-8111-111111111111';
+const FILE_1 = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+const FILE_2 = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
+
+const MOUNTS = [
+  ['/company', companyPortalRoutes],
+  ['/companies', companyRoutes],
+  ['/company-files', companyFilesRouter],
+  ['/review-queue', reviewQueueRouter],
+];
+
+const companyAdminToken = () => tokenFor({ role: 'company', companyId: COMPANY_A });
+const adminToken = () => tokenFor({ role: 'admin', sub: 'admin-1' });
+
+/**
+ * Set NOTIFY_DIGEST_ENABLED for one test and put it back afterwards. Unset,
+ * session digests are ON (HANDOVER-CW025, Mark's decision of 10 September
+ * 2026); 'false' is the kill switch back to one message per event.
+ */
+function digestSwitch(t, value) {
+  const before = process.env.NOTIFY_DIGEST_ENABLED;
+  if (value === undefined) delete process.env.NOTIFY_DIGEST_ENABLED;
+  else process.env.NOTIFY_DIGEST_ENABLED = value;
+  t.after(() => {
+    if (before === undefined) delete process.env.NOTIFY_DIGEST_ENABLED;
+    else process.env.NOTIFY_DIGEST_ENABLED = before;
+  });
+}
+
+function stagedFile(id, itemId = null) {
+  return {
+    id,
+    company_id: COMPANY_A,
+    irl_item_id: itemId,
+    filename: `${id}.pdf`,
+    description: 'A described file',
+    upload_state: 'staged',
+    status: null,
+    deleted_at: null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Submission
+// ---------------------------------------------------------------------------
+
+test('a submission is refused outright if any named file is unavailable', async (t) => {
+  // Two ids are named. Only one is still staged and belongs to this company.
+  // The batch must fail rather than quietly produce a receipt listing one file
+  // when the company believes it sent two.
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['FROM company_files\n       WHERE id = ANY', [stagedFile(FILE_1)]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/submit', {
+    method: 'POST',
+    token: companyAdminToken(),
+    body: { fileIds: [FILE_1, FILE_2] },
+  });
+
+  assert.equal(res.status, 409);
+  assert.match(res.body.error, /no longer available/);
+
+  // Nothing was created: no receipt reference was taken and no batch inserted.
+  assert.equal(pool.sql().some((s) => s.includes('INSERT INTO submission_batches')), false);
+  assert.equal(pool.sql().some((s) => s.includes("nextval('company_receipt_ref_seq')")), false);
+  assert.ok(pool.sql().includes('ROLLBACK'));
+});
+
+test('a submission with no files is refused before anything is locked', async (t) => {
+  const pool = fakePool([membershipHandler(membershipRow({ companyId: COMPANY_A }))]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  for (const body of [{}, { fileIds: [] }, { fileIds: 'not-an-array' }]) {
+    const res = await server.request('/company/submit', {
+      method: 'POST', token: companyAdminToken(), body,
+    });
+    assert.equal(res.status, 400);
+  }
+});
+
+test('a successful submission takes a receipt reference, moves the files and returns the receipt', async (t) => {
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['FROM company_files\n       WHERE id = ANY', [stagedFile(FILE_1), stagedFile(FILE_2)]],
+    ["nextval('company_receipt_ref_seq')", [{ n: 42 }]],
+    ['INSERT INTO submission_batches', [{
+      id: 'batch-1',
+      receipt_ref: 'TRN-DD-2026-000042',
+      submitted_at: new Date('2026-08-06T10:00:00Z'),
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/submit', {
+    method: 'POST',
+    token: companyAdminToken(),
+    body: { fileIds: [FILE_1, FILE_2] },
+  });
+
+  assert.equal(res.status, 201);
+  assert.equal(res.body.receiptRef, 'TRN-DD-2026-000042');
+  assert.equal(res.body.files.length, 2);
+  // The receipt names every file and its description, because that is what the
+  // approved receipt email restates.
+  for (const file of res.body.files) {
+    assert.ok(file.filename);
+    assert.ok(file.description);
+  }
+
+  const sql = pool.sql().join('\n');
+  assert.match(sql, /UPDATE company_files\s+SET upload_state = 'submitted', status = 'received'/);
+  assert.match(sql, /INSERT INTO file_status_history/);
+  assert.ok(pool.sql().includes('COMMIT'));
+});
+
+test('a submission queues the receipt and the Taranis notice inside its transaction', async (t) => {
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['FROM company_files\n       WHERE id = ANY', [stagedFile(FILE_1), stagedFile(FILE_2)]],
+    ["nextval('company_receipt_ref_seq')", [{ n: 42 }]],
+    ['INSERT INTO submission_batches', [{
+      id: 'batch-1',
+      receipt_ref: 'TRN-DD-2026-000042',
+      submitted_at: new Date('2026-08-06T10:00:00Z'),
+    }]],
+    ['SELECT id, ref, description FROM company_irl_items', [
+      { id: 'item-1', ref: '3.2', description: 'Audited accounts' },
+    ]],
+    ['INSERT INTO notification_outbox', [{ id: 'n-1' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/submit', {
+    method: 'POST', token: companyAdminToken(), body: { fileIds: [FILE_1, FILE_2] },
+  });
+  assert.equal(res.status, 201);
+
+  const queued = pool.calls.filter((c) => c.text.includes('INSERT INTO notification_outbox'));
+  assert.equal(queued.length, 2, 'expected the company receipt and the Taranis notice');
+
+  const [receipt, notice] = queued;
+  assert.equal(receipt.params[0], 'submission-receipt');
+  assert.equal(notice.params[0], 'submission-notification');
+  assert.equal(notice.params[1], 'admin@taraniscapital.com');
+
+  // The receipt restates every file, which is what makes it the formal record
+  // the approved wording tells the company to keep.
+  const payload = JSON.parse(receipt.params[2]);
+  assert.equal(payload.receipt_ref, 'TRN-DD-2026-000042');
+  assert.equal(payload.file_count, 2);
+  assert.equal(payload.files.length, 2);
+  assert.equal(payload.submitted_at_utc, '6 August 2026 at 10:00');
+
+  // Both rows are written BEFORE the commit. Queued after it, a process death
+  // in between would lose the only formal record of a submission the company
+  // has already been told succeeded.
+  const order = pool.sql();
+  const commitAt = order.indexOf('COMMIT');
+  const lastQueueAt = order.map((s, i) => (s.includes('notification_outbox') ? i : -1))
+    .filter((i) => i >= 0)
+    .pop();
+  assert.ok(lastQueueAt < commitAt, 'a notification was queued outside the transaction');
+});
+
+// ---------------------------------------------------------------------------
+// Superseding a replaced version (HANDOVER-CW010)
+// ---------------------------------------------------------------------------
+
+const OLD_FILE = 'cccccccc-3333-4333-8333-cccccccccccc';
+
+/** A staged replacement, pointing at the submitted version it supersedes. */
+function replacementFile(id, { supersedes, itemId = 'item-1', version = 2 } = {}) {
+  return { ...stagedFile(id, itemId), supersedes, version };
+}
+
+const submitHandlers = (extra = []) => [
+  membershipHandler(membershipRow({ companyId: COMPANY_A })),
+  ["nextval('company_receipt_ref_seq')", [{ n: 42 }]],
+  ['INSERT INTO submission_batches', [{
+    id: 'batch-1',
+    receipt_ref: 'TRN-DD-2026-000042',
+    submitted_at: new Date('2026-08-06T10:00:00Z'),
+  }]],
+  ...extra,
+];
+
+test('submitting a replacement retires the submitted version it supersedes', async (t) => {
+  const pool = fakePool(submitHandlers([
+    ['FROM company_files\n       WHERE id = ANY', [
+      replacementFile(FILE_1, { supersedes: OLD_FILE }),
+    ]],
+    ['SELECT id, irl_item_id, filename, status FROM company_files', [{
+      id: OLD_FILE, irl_item_id: 'item-1', filename: 'accounts-2024.pdf',
+      status: 'attention_needed',
+    }]],
+    ['SELECT id, state, baseline_state', [{
+      id: 'item-1', state: 'attention_needed', baseline_state: 'outstanding',
+    }]],
+    // What the item derives from once the old version has been retired.
+    ['SELECT upload_state, status, deleted_at', [
+      { upload_state: 'submitted', status: 'superseded', deleted_at: null },
+      { upload_state: 'submitted', status: 'received', deleted_at: null },
+    ]],
+  ]));
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/submit', {
+    method: 'POST', token: companyAdminToken(), body: { fileIds: [FILE_1] },
+  });
+  assert.equal(res.status, 201);
+
+  const sql = pool.sql().join('\n');
+  // The old version is retired, and the retirement is inside the transaction
+  // that made the submission: a receipt the company holds must not be able to
+  // exist alongside a predecessor that was never retired.
+  assert.match(sql, /UPDATE company_files SET status = 'superseded' WHERE id = \$1/);
+  const retire = pool.calls.find((c) => c.text.includes("SET status = 'superseded'"));
+  assert.deepEqual(retire.params, [OLD_FILE]);
+  assert.ok(pool.sql().indexOf('COMMIT') > pool.sql().indexOf(retire.text));
+
+  // The lookup that found it was scoped to the caller's company and to a file
+  // that is actually submitted, not staged.
+  const lookup = pool.calls.find((c) =>
+    c.text.includes('SELECT id, irl_item_id, filename, status FROM company_files'));
+  assert.deepEqual(lookup.params, [OLD_FILE, COMPANY_A]);
+  assert.match(lookup.text, /upload_state = 'submitted'/);
+  assert.match(lookup.text, /status <> 'superseded'/);
+
+  // History records the retirement and names the version that caused it.
+  const history = pool.calls.find((c) => c.text.includes("VALUES ($1, 'superseded', $2, $3)"));
+  assert.ok(history, 'a superseded history row was written');
+  assert.equal(history.params[0], OLD_FILE);
+  assert.match(history.params[1], /Replaced by version 2: /);
+
+  // And the item state was recomputed off the flag.
+  const update = pool.calls.find((c) => c.text.includes('UPDATE company_irl_items SET state'));
+  assert.equal(update.params[1], 'received');
+});
+
+test('the retirement records the status the old version is leaving, not the one it lands on', async (t) => {
+  // An UPDATE ... RETURNING would hand back 'superseded' and the audit entry
+  // would say the file went from superseded to superseded.
+  const pool = fakePool(submitHandlers([
+    ['FROM company_files\n       WHERE id = ANY', [
+      replacementFile(FILE_1, { supersedes: OLD_FILE }),
+    ]],
+    ['SELECT id, irl_item_id, filename, status FROM company_files', [{
+      id: OLD_FILE, irl_item_id: 'item-1', filename: 'accounts-2024.pdf',
+      status: 'attention_needed',
+    }]],
+  ]));
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  await server.request('/company/submit', {
+    method: 'POST', token: companyAdminToken(), body: { fileIds: [FILE_1] },
+  });
+
+  // Every status change lands in audit_log as well as file_status_history
+  // (migration 013), including the ones the system makes on the company's
+  // behalf.
+  const audit = pool.calls.find((c) =>
+    c.text.includes('INSERT INTO audit_log') && c.params?.[1] === 'company_file.superseded');
+  assert.ok(audit, 'the retirement was audited');
+  const detail = typeof audit.params[4] === 'string' ? JSON.parse(audit.params[4]) : audit.params[4];
+  assert.equal(detail.from, 'attention_needed');
+  assert.equal(detail.replacedBy, FILE_1);
+});
+
+test('a replacement whose predecessor is only staged retires nothing', async (t) => {
+  // The staged predecessor is left alone deliberately: replacing a staged file
+  // leaves both in the staged list, a known rough edge and out of CW010's
+  // scope. What must not happen is a silent failure that looks like success
+  // while an attention_needed flag survives.
+  const pool = fakePool(submitHandlers([
+    ['FROM company_files\n       WHERE id = ANY', [
+      replacementFile(FILE_1, { supersedes: OLD_FILE }),
+    ]],
+    // The scoped lookup finds nothing, because the predecessor is not submitted.
+    ['SELECT id, irl_item_id, filename, status FROM company_files', []],
+  ]));
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/submit', {
+    method: 'POST', token: companyAdminToken(), body: { fileIds: [FILE_1] },
+  });
+
+  assert.equal(res.status, 201);
+  assert.equal(pool.sql().some((s) => s.includes("SET status = 'superseded'")), false);
+  assert.ok(pool.sql().includes('COMMIT'));
+});
+
+test('a submission with no replacements in it retires nothing', async (t) => {
+  const pool = fakePool(submitHandlers([
+    ['FROM company_files\n       WHERE id = ANY', [stagedFile(FILE_1), stagedFile(FILE_2)]],
+  ]));
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/submit', {
+    method: 'POST', token: companyAdminToken(), body: { fileIds: [FILE_1, FILE_2] },
+  });
+
+  assert.equal(res.status, 201);
+  assert.equal(pool.sql().some((s) => s.includes("SET status = 'superseded'")), false);
+});
+
+test('a version that has already been replaced cannot be replaced again', async (t) => {
+  // The item page hides the button on those rows, but a UI-only rule is a
+  // courtesy. Without this the chain forks and both branches mint a file
+  // numbered version 2.
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['SELECT * FROM company_files', [{
+      id: OLD_FILE, company_id: COMPANY_A, irl_item_id: 'item-1',
+      upload_state: 'submitted', status: 'superseded', version: 1, deleted_at: null,
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const form = new FormData();
+  form.append('description', 'A corrected set of accounts');
+  form.append('file', new Blob(['%PDF-1.4 test'], { type: 'application/pdf' }), 'accounts.pdf');
+
+  const res = await fetch(`${server.base}/company/files/${OLD_FILE}/replace`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${companyAdminToken()}` },
+    body: form,
+  });
+  const body = await res.json();
+
+  assert.equal(res.status, 409);
+  assert.match(body.error, /already been replaced/);
+  // Refused before anything was written, not after.
+  assert.equal(pool.sql().some((s) => s.includes('INSERT INTO company_files')), false);
+});
+
+test('a reviewer can retire a version by hand, and without a note', async (t) => {
+  // The route the smoke test actually took: the correction arrived as a
+  // separate document, so no version chain exists and nothing retires the old
+  // file automatically.
+  const pool = fakePool([
+    ['FROM company_files f\n     JOIN companies c', [{
+      id: FILE_1, company_id: COMPANY_A, irl_item_id: 'item-1',
+      upload_state: 'submitted', status: 'attention_needed', legal_name: 'Example Bio',
+    }]],
+    ['SELECT id, state, baseline_state', [{
+      id: 'item-1', state: 'attention_needed', baseline_state: 'partially_held',
+    }]],
+    ['SELECT upload_state, status, deleted_at', [
+      { upload_state: 'submitted', status: 'superseded', deleted_at: null },
+      { upload_state: 'submitted', status: 'completed', deleted_at: null },
+    ]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company-files/${FILE_1}/status`, {
+    method: 'PATCH', token: adminToken(), body: { status: 'superseded' },
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.status, 'superseded');
+  // The flag clears without anyone having to falsify the old file's status.
+  const update = pool.calls.find((c) => c.text.includes('UPDATE company_irl_items SET state'));
+  assert.equal(update.params[1], 'completed');
+});
+
+test('an unknown file status is still refused', async (t) => {
+  const pool = fakePool([]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  for (const status of ['superceded', 'retired', 'deleted', '']) {
+    const res = await server.request(`/company-files/${FILE_1}/status`, {
+      method: 'PATCH', token: adminToken(), body: { status },
+    });
+    assert.equal(res.status, 400, `${status} should be refused`);
+  }
+});
+
+test('the staged file lock is scoped to the caller\'s own company', async (t) => {
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['FROM company_files\n       WHERE id = ANY', []],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  await server.request('/company/submit', {
+    method: 'POST', token: companyAdminToken(), body: { fileIds: [FILE_1] },
+  });
+
+  const lock = pool.calls.find((c) => c.text.includes('WHERE id = ANY'));
+  assert.ok(lock);
+  assert.equal(lock.params[1], COMPANY_A);
+  assert.match(lock.text, /upload_state = 'staged'/);
+  assert.match(lock.text, /FOR UPDATE/);
+});
+
+// ---------------------------------------------------------------------------
+// Staged versus submitted
+// ---------------------------------------------------------------------------
+
+test('a submitted file can no longer be edited or removed by the company', async (t) => {
+  // The UPDATE carries `upload_state = 'staged'` in its WHERE clause, so a
+  // submitted file matches nothing and the route answers 404.
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['UPDATE company_files SET description', []],
+    ['UPDATE company_files SET deleted_at', []],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const token = companyAdminToken();
+
+  const patch = await server.request(`/company/files/${FILE_1}`, {
+    method: 'PATCH', token, body: { description: 'changed my mind' },
+  });
+  assert.equal(patch.status, 404);
+  assert.match(patch.body.error, /already been submitted/);
+
+  const del = await server.request(`/company/files/${FILE_1}`, { method: 'DELETE', token });
+  assert.equal(del.status, 404);
+  assert.match(del.body.error, /already been submitted/);
+
+  for (const call of pool.calls.filter((c) => c.text.includes('UPDATE company_files'))) {
+    assert.match(call.text, /upload_state = 'staged'/);
+    assert.equal(call.params[1], COMPANY_A);
+  }
+});
+
+test('a file cannot be uploaded without a description', async (t) => {
+  const pool = fakePool([membershipHandler(membershipRow({ companyId: COMPANY_A }))]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company/files/${FILE_1}`, {
+    method: 'PATCH', token: companyAdminToken(), body: { description: '   ' },
+  });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /description is required/);
+});
+
+// ---------------------------------------------------------------------------
+// Status flow
+// ---------------------------------------------------------------------------
+
+test('attention_needed without a note is refused, before anything is written', async (t) => {
+  const pool = fakePool([]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  for (const note of [undefined, '', '   ']) {
+    const res = await server.request(`/company-files/${FILE_1}/status`, {
+      method: 'PATCH',
+      token: adminToken(),
+      body: { status: 'attention_needed', ...(note === undefined ? {} : { note }) },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /note is required/);
+  }
+  assert.equal(pool.calls.length, 0, 'the file should not even be looked up');
+});
+
+test('an unknown status is refused', async (t) => {
+  const pool = fakePool([]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company-files/${FILE_1}/status`, {
+    method: 'PATCH', token: adminToken(), body: { status: 'approved' },
+  });
+  assert.equal(res.status, 400);
+});
+
+test('a status change writes history and recomputes the item state', async (t) => {
+  const pool = fakePool([
+    ['FROM company_files f\n     JOIN companies c', [{
+      id: FILE_1, company_id: COMPANY_A, irl_item_id: 'item-1',
+      upload_state: 'submitted', status: 'received', legal_name: 'Example Bio',
+    }]],
+    ['SELECT id, state, baseline_state', [{
+      id: 'item-1', state: 'received', baseline_state: 'outstanding',
+    }]],
+    ['SELECT upload_state, status, deleted_at', [
+      { upload_state: 'submitted', status: 'attention_needed', deleted_at: null },
+    ]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company-files/${FILE_1}/status`, {
+    method: 'PATCH',
+    token: adminToken(),
+    body: { status: 'attention_needed', note: 'This is the 2024 file, we need 2025.' },
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.status, 'attention_needed');
+
+  const sql = pool.sql().join('\n');
+  assert.match(sql, /INSERT INTO file_status_history/);
+  // The item state was recomputed and moved to attention_needed.
+  assert.match(sql, /UPDATE company_irl_items SET state = \$2/);
+  const update = pool.calls.find((c) => c.text.includes('UPDATE company_irl_items SET state'));
+  assert.equal(update.params[1], 'attention_needed');
+});
+
+test('with digests switched off, attention_needed emails the uploader and the company admin at once, with the note', async (t) => {
+  // The kill switch must put back exactly the behaviour from before CW025.
+  digestSwitch(t, 'false');
+  const pool = fakePool([
+    ['FROM company_files f\n     JOIN companies c', [{
+      id: FILE_1, company_id: COMPANY_A, irl_item_id: 'item-1', uploaded_by: 'user-7',
+      batch_id: 'batch-1', filename: 'accounts-2024.pdf',
+      upload_state: 'submitted', status: 'received', legal_name: 'Example Bio',
+    }]],
+    ['SELECT id, state, baseline_state', [{
+      id: 'item-1', state: 'received', baseline_state: 'outstanding',
+    }]],
+    ['SELECT upload_state, status, deleted_at', [
+      { upload_state: 'submitted', status: 'attention_needed', deleted_at: null },
+    ]],
+    // Deliberately selected by name: an internal note must never be in reach of
+    // a payload addressed to the counterparty.
+    ['SELECT ref, description FROM company_irl_items', [
+      { ref: '3.2', description: 'Audited accounts for the last three years' },
+    ]],
+    ['SELECT receipt_ref, submitted_at FROM submission_batches', [
+      { receipt_ref: 'TRN-DD-2026-000042', submitted_at: new Date('2026-08-06T10:00:00Z') },
+    ]],
+    ['FROM company_users cu\n       JOIN users u', [
+      { email: 'uploader@examplebio.com', display_name: 'Sam Patel' },
+      { email: 'admin@examplebio.com', display_name: 'Alex Fenn' },
+    ]],
+    ['INSERT INTO notification_outbox', [{ id: 'n-1' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company-files/${FILE_1}/status`, {
+    method: 'PATCH',
+    token: adminToken(),
+    body: { status: 'attention_needed', note: 'This is the 2024 file, we need 2025.' },
+  });
+  assert.equal(res.status, 200);
+
+  const queued = pool.calls.filter((c) => c.text.includes('INSERT INTO notification_outbox'));
+  assert.equal(queued.length, 2, 'the uploader and the company admin should each get a row');
+  assert.deepEqual(
+    queued.map((c) => c.params[1]),
+    ['uploader@examplebio.com', 'admin@examplebio.com']
+  );
+
+  // One row per address rather than one row with two, so suppression and the
+  // audit trail stay per-person and each is addressed by their own name.
+  const first = JSON.parse(queued[0].params[2]);
+  assert.equal(first.first_name, 'Sam');
+  assert.equal(JSON.parse(queued[1].params[2]).first_name, 'Alex');
+
+  assert.equal(queued[0].params[0], 'status-attention');
+  assert.equal(first.reviewer_note, 'This is the 2024 file, we need 2025.');
+  assert.equal(first.receipt_ref, 'TRN-DD-2026-000042');
+  assert.ok(first.item_url.endsWith('/company/items/item-1'));
+  assert.equal(first.internal_note, undefined);
+  assert.equal(pool.sql().some((s) => s.includes('notification_digest_events')), false);
+});
+
+// ---------------------------------------------------------------------------
+// Session digests (HANDOVER-CW025): the default
+// ---------------------------------------------------------------------------
+
+/** The world of one submitted file whose status is about to change. */
+function statusChangePool(finalStatus) {
+  return fakePool([
+    ['FROM company_files f\n     JOIN companies c', [{
+      id: FILE_1, company_id: COMPANY_A, irl_item_id: 'item-1', uploaded_by: 'user-7',
+      batch_id: 'batch-1', filename: 'accounts-2024.pdf',
+      upload_state: 'submitted', status: 'received', legal_name: 'Example Bio',
+    }]],
+    ['SELECT id, state, baseline_state', [{
+      id: 'item-1', state: 'received', baseline_state: 'outstanding',
+    }]],
+    ['SELECT upload_state, status, deleted_at', [
+      { upload_state: 'submitted', status: finalStatus, deleted_at: null },
+    ]],
+    ['FROM company_users cu\n       JOIN users u', [
+      { email: 'Uploader@ExampleBio.com', display_name: 'Sam Patel' },
+      { email: 'admin@examplebio.com', display_name: 'Alex Fenn' },
+    ]],
+    ['INSERT INTO notification_digest_events', () => [{ id: `e-${Math.random()}` }]],
+  ]);
+}
+
+for (const [status, note] of [
+  ['attention_needed', 'This is the 2024 file, we need 2025.'],
+  ['completed', undefined],
+]) {
+  test(`by default ${status} records a digest event per recipient inside the transaction, and sends nothing yet`, async (t) => {
+    digestSwitch(t, undefined);
+    const pool = statusChangePool(status);
+    const server = await startTestServer(MOUNTS, pool);
+    t.after(() => server.close());
+
+    const res = await server.request(`/company-files/${FILE_1}/status`, {
+      method: 'PATCH', token: adminToken(), body: { status, ...(note ? { note } : {}) },
+    });
+    assert.equal(res.status, 200);
+
+    const events = pool.calls.filter((c) => c.text.includes('INSERT INTO notification_digest_events'));
+    assert.equal(events.length, 2, 'one event for the uploader, one for the company admin');
+    assert.deepEqual(events.map((e) => e.params[0]), ['company-status', 'company-status']);
+    // Lower-cased, so one person is one digest however the address was typed.
+    assert.deepEqual(events.map((e) => e.params[1]), ['uploader@examplebio.com', 'admin@examplebio.com']);
+    assert.equal(events[0].params[2], COMPANY_A);
+    // Ids only: the message is built from the file as it stands when the
+    // sitting ends, so neither the note nor the status is stored here.
+    assert.deepEqual(JSON.parse(events[0].params[3]), { fileId: FILE_1 });
+
+    // Written with the change, not after it.
+    const order = pool.sql();
+    const commitAt = order.indexOf('COMMIT');
+    const lastEventAt = order.map((s, i) => (s.includes('notification_digest_events') ? i : -1))
+      .filter((i) => i >= 0).pop();
+    assert.ok(lastEventAt < commitAt, 'a digest event was written outside the status transaction');
+
+    // Nothing reaches the outbox until the sitting closes.
+    assert.equal(pool.sql().some((s) => s.includes('notification_outbox')), false);
+  });
+}
+
+test('by default a status that does not notify records no digest event either', async (t) => {
+  digestSwitch(t, undefined);
+  const pool = statusChangePool('in_review');
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company-files/${FILE_1}/status`, {
+    method: 'PATCH', token: adminToken(), body: { status: 'in_review' },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(pool.sql().some((s) => s.includes('notification_digest_events')), false);
+  assert.equal(pool.sql().some((s) => s.includes('notification_outbox')), false);
+});
+
+/** Upload one file against item 3.2 and return the pool that saw it. */
+async function uploadOne(t) {
+  const { setStorage, resetStorage, MemoryStorage } = await import('../src/services/storage.js');
+  const { setScanner, resetScanner, StubScanner } = await import('../src/services/scanner.js');
+  setStorage(new MemoryStorage());
+  setScanner(new StubScanner({ warnOnUse: false }));
+  t.after(() => { resetStorage(); resetScanner(); });
+
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['SELECT id, state, ref, description FROM company_irl_items', [
+      { id: 'item-1', state: 'outstanding', ref: '3.2', description: 'Audited accounts' },
+    ]],
+    ['INSERT INTO company_files', (params) => [{
+      id: params[0], company_id: COMPANY_A, irl_item_id: 'item-1', filename: 'accounts.pdf',
+      description: 'FY2025', size_bytes: 13, content_type: 'application/pdf', version: 1,
+      upload_state: 'staged', status: null, created_at: new Date(),
+    }]],
+    ['INSERT INTO notification_digest_events', [{ id: 'e-1' }]],
+    ['INSERT INTO notification_outbox', [{ id: 'n-1' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const form = new FormData();
+  form.append('irlItemId', 'item-1');
+  form.append('description', 'FY2025');
+  form.append('file', new Blob(['%PDF-1.4 test'], { type: 'application/pdf' }), 'accounts.pdf');
+
+  const res = await fetch(`${server.base}/company/files`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${companyAdminToken()}` },
+    body: form,
+  });
+  return { pool, status: res.status, body: await res.json() };
+}
+
+test('by default an upload records an admin-uploads digest event for that file, and sends nothing yet', async (t) => {
+  digestSwitch(t, undefined);
+  const { pool, status, body } = await uploadOne(t);
+  assert.equal(status, 201);
+
+  const event = pool.calls.find((c) => c.text.includes('INSERT INTO notification_digest_events'));
+  assert.ok(event, 'no digest event was recorded for the upload');
+  assert.equal(event.params[0], 'admin-uploads');
+  assert.equal(event.params[1], 'admin@taraniscapital.com');
+  assert.equal(event.params[2], COMPANY_A);
+  assert.deepEqual(JSON.parse(event.params[3]), { fileId: body.id });
+  assert.equal(pool.sql().some((s) => s.includes('notification_outbox')), false);
+});
+
+test('with digests switched off an upload is announced at once, as before', async (t) => {
+  digestSwitch(t, 'false');
+  const { pool, status } = await uploadOne(t);
+  assert.equal(status, 201);
+
+  const queued = pool.calls.find((c) => c.text.includes('INSERT INTO notification_outbox'));
+  assert.ok(queued, 'the upload notification was not queued');
+  assert.equal(queued.params[0], 'upload-notification');
+  assert.equal(pool.sql().some((s) => s.includes('notification_digest_events')), false);
+});
+
+test('by default an added checklist item records a digest event for each company user', async (t) => {
+  digestSwitch(t, undefined);
+  const pool = fakePool([
+    ['COALESCE(MAX(sort_order), 0)', [{ n: 146 }]],
+    ['INSERT INTO company_irl_items', [{
+      id: 'item-new', ref: '15.1', description: 'Board minutes', priority: 'high',
+      note_for_company: null, internal_note: 'Chase counsel',
+    }]],
+    ['JOIN companies c ON c.id = cu.company_id', [
+      { legal_name: 'Example Bio', email: 'alex@examplebio.com', display_name: 'Alex Fenn' },
+      { legal_name: 'Example Bio', email: 'sam@examplebio.com', display_name: 'Sam Patel' },
+    ]],
+    ['INSERT INTO notification_digest_events', () => [{ id: `e-${Math.random()}` }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/irl-items`, {
+    method: 'POST',
+    token: adminToken(),
+    body: { section: 'Governance', ref: '15.1', description: 'Board minutes', priority: 'high' },
+  });
+  assert.equal(res.status, 201);
+
+  const events = pool.calls.filter((c) => c.text.includes('INSERT INTO notification_digest_events'));
+  assert.equal(events.length, 2);
+  assert.deepEqual(events.map((e) => e.params[0]), ['company-new-items', 'company-new-items']);
+  assert.deepEqual(JSON.parse(events[0].params[3]), { itemId: 'item-new' });
+  // Nothing about the item's content, internal note least of all, is stored.
+  assert.equal(events.some((e) => String(e.params[3]).includes('Chase counsel')), false);
+  assert.equal(pool.sql().some((s) => s.includes('notification_outbox')), false);
+});
+
+test('a status change that is neither attention_needed nor completed emails nobody', async (t) => {
+  // 'received', 'in_review' and 'superseded' are internal progress the company
+  // can see in its workspace, and there is no approved template for them.
+  const pool = fakePool([
+    ['FROM company_files f\n     JOIN companies c', [{
+      id: FILE_1, company_id: COMPANY_A, irl_item_id: 'item-1',
+      upload_state: 'submitted', status: 'received', legal_name: 'Example Bio',
+    }]],
+    ['SELECT id, state, baseline_state', [{
+      id: 'item-1', state: 'received', baseline_state: 'outstanding',
+    }]],
+    ['SELECT upload_state, status, deleted_at', [
+      { upload_state: 'submitted', status: 'in_review', deleted_at: null },
+    ]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company-files/${FILE_1}/status`, {
+    method: 'PATCH', token: adminToken(), body: { status: 'in_review' },
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(pool.sql().some((s) => s.includes('notification_outbox')), false);
+});
+
+test('a status cannot be set on a file that has never been submitted', async (t) => {
+  const pool = fakePool([
+    ['FROM company_files f\n     JOIN companies c', [{
+      id: FILE_1, company_id: COMPANY_A, upload_state: 'staged', legal_name: 'Example Bio',
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company-files/${FILE_1}/status`, {
+    method: 'PATCH', token: adminToken(), body: { status: 'in_review' },
+  });
+  assert.equal(res.status, 409);
+  assert.match(res.body.error, /not been formally submitted/);
+});
+
+test('the company sees the reviewer note on a file, but never the internal note', async (t) => {
+  // A note is mandatory on attention_needed precisely so the company knows what
+  // to fix. A flag with no explanation is a wasted round trip, so the note has
+  // to reach them. The item's internal_note must not travel with it.
+  const pool = fakePool([
+    membershipHandler(membershipRow({ companyId: COMPANY_A })),
+    ['FROM company_irl_items WHERE id = $1 AND company_id = $2', [{
+      id: 'item-1', company_id: COMPANY_A, section: '1. Corporate', ref: '1.1',
+      description: 'Certificate of incorporation', priority: 'high',
+      state: 'attention_needed', note_for_company: null,
+      internal_note: 'INTERNAL: chase their counsel directly',
+    }]],
+    ['LEFT JOIN LATERAL', [{
+      id: FILE_1, irl_item_id: 'item-1', filename: 'certificate.pdf',
+      description: 'Certificate of incorporation', size_bytes: 100,
+      upload_state: 'submitted', status: 'attention_needed',
+      uploaded_by_name: 'A Contact', receipt_ref: 'TRN-DD-2026-000001',
+      status_note: 'This is the 2024 certificate, we need the amended one.',
+      status_set_at: new Date('2026-08-06T10:00:00Z'),
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/company/items/item-1', { token: companyAdminToken() });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.files[0].statusNote, 'This is the 2024 certificate, we need the amended one.');
+
+  const raw = JSON.stringify(res.body);
+  assert.equal(raw.includes('INTERNAL'), false);
+  assert.equal(raw.includes('chase their counsel'), false);
+  assert.equal('internal_note' in res.body.item, false);
+});
+
+// ---------------------------------------------------------------------------
+// Downloads are gated on the scan verdict
+// ---------------------------------------------------------------------------
+
+test('an unscanned file is served under the stub, but the response says it was not scanned', async (t) => {
+  // The accepted beta position (HANDOVER-C004 §3.1). Refusing here would make
+  // the portal useless, because the stub never clears anything.
+  const { setStorage, MemoryStorage } = await import('../src/services/storage.js');
+  const store = new MemoryStorage();
+  await store.put('companies/a/i/f/x.pdf', { body: Buffer.from('%PDF-1.4 bytes') });
+  setStorage(store);
+  t.after(async () => (await import('../src/services/storage.js')).resetStorage());
+
+  const pool = fakePool([
+    ['FROM company_files f\n     JOIN companies c', [{
+      id: FILE_1, company_id: COMPANY_A, upload_state: 'submitted',
+      scan_state: 'pending', s3_key: 'companies/a/i/f/x.pdf',
+      filename: 'x.pdf', content_type: 'application/pdf', legal_name: 'Example Bio',
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await fetch(`${server.base}/company-files/${FILE_1}/download`, {
+    headers: { Authorization: `Bearer ${adminToken()}` },
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-taranis-scan-state'), 'pending');
+  assert.equal(await res.text(), '%PDF-1.4 bytes');
+
+  // The audit row must record that this was served without ever being
+  // inspected, so it is answerable later exactly which files those were.
+  const audit = pool.calls.find((c) => c.text.includes('INSERT INTO audit_log'));
+  assert.ok(audit, 'the download should have been audited');
+  assert.equal(audit.params[1], 'company_file.downloaded');
+  const detail = JSON.parse(audit.params[4]);
+  assert.equal(detail.unscanned, true);
+  assert.equal(detail.scanState, 'pending');
+});
+
+test('an infected file says so rather than pretending it is merely pending', async (t) => {
+  const pool = fakePool([
+    ['FROM company_files f\n     JOIN companies c', [{
+      id: FILE_1, company_id: COMPANY_A, upload_state: 'submitted',
+      scan_state: 'infected', s3_key: 'k', filename: 'x.pdf', legal_name: 'Example Bio',
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/company-files/${FILE_1}/download`, { token: adminToken() });
+  assert.equal(res.status, 409);
+  assert.match(res.body.error, /quarantined/);
+});
+
+// ---------------------------------------------------------------------------
+// The listings publish the server's own download decision (HANDOVER-CW006)
+//
+// The UI must not re-derive the rule, because the rule depends on which scanner
+// backend is live and the browser cannot know that. These tests are what stops
+// the two drifting: they assert that the answer on the row is the answer
+// `downloadDecision` gives, for the same states the download route is tested at
+// directly above.
+// ---------------------------------------------------------------------------
+
+/** The joined shape `GET /companies/:id/files` selects. */
+function submittedFile(id, scanState) {
+  return {
+    id,
+    company_id: COMPANY_A,
+    filename: `${id}.pdf`,
+    description: 'A document',
+    size_bytes: 1024,
+    content_type: 'application/pdf',
+    version: 1,
+    supersedes: null,
+    status: 'received',
+    scan_state: scanState,
+    scan_backend: 'stub',
+    upload_state: 'submitted',
+    created_at: new Date(),
+  };
+}
+
+test('the company Files listing says which files can be downloaded, and why not when they cannot', async (t) => {
+  const pool = fakePool([
+    ['FROM company_files f\n       JOIN users u', [
+      submittedFile(FILE_1, 'pending'),
+      submittedFile(FILE_2, 'infected'),
+    ]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/files`, { token: adminToken() });
+  assert.equal(res.status, 200);
+
+  const [unscanned, infected] = res.body;
+
+  // Under the stub, an unscanned file is downloadable and is flagged as never
+  // having been inspected. That is the ratified beta position.
+  assert.equal(unscanned.downloadable, true);
+  assert.equal(unscanned.downloadUnscanned, true);
+  assert.equal(unscanned.downloadBlockedReason, null);
+
+  // A verdict is a verdict, under any backend.
+  assert.equal(infected.downloadable, false);
+  assert.equal(infected.downloadUnscanned, false);
+  assert.match(infected.downloadBlockedReason, /quarantined/);
+});
+
+test('the review queue publishes the same decision as the Files tab', async (t) => {
+  // Two screens, one rule. A reviewer who can open a file from the company page
+  // must be able to open it from the queue, and the reverse.
+  const pool = fakePool([
+    ['FROM company_files f\n       JOIN companies c', [
+      { ...submittedFile(FILE_1, 'pending'), legal_name: 'Example Bio' },
+      { ...submittedFile(FILE_2, 'infected'), legal_name: 'Example Bio' },
+    ]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/review-queue', { token: adminToken() });
+  assert.equal(res.status, 200);
+
+  const [unscanned, infected] = res.body;
+  assert.equal(unscanned.downloadable, true);
+  assert.equal(unscanned.downloadUnscanned, true);
+  assert.equal(infected.downloadable, false);
+  assert.match(infected.downloadBlockedReason, /quarantined/);
+});
+
+// ---------------------------------------------------------------------------
+// What the review queue shows
+//
+// Taking a file up used to make it disappear: the queue's Set status button
+// defaults to In review, and the queue was 'received' only, so a submission
+// somebody started reading and did not finish appeared on no other screen than
+// its own company's Files tab. The dashboard counts both states, so the queue
+// has to be able to show both or the tile would link to a screen with fewer
+// rows on it than the number just clicked (HANDOVER-C020 D3).
+// ---------------------------------------------------------------------------
+
+function queuePool() {
+  return fakePool([
+    ['FROM company_files f\n       JOIN companies c', [
+      { ...submittedFile(FILE_1, 'clean'), legal_name: 'Example Bio' },
+    ]],
+  ]);
+}
+
+/** The status array the handler passed as $1. */
+function statusesAsked(pool) {
+  const call = pool.calls.find((c) => c.text.includes('FROM company_files f'));
+  return call?.params?.[0];
+}
+
+test('the review queue asks for received only unless told otherwise', async (t) => {
+  const pool = queuePool();
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/review-queue', { token: adminToken() });
+  assert.equal(res.status, 200);
+  assert.deepEqual(statusesAsked(pool), ['received']);
+  // The row carries its status now, so a mixed view can label it.
+  assert.equal(res.body[0].status, 'received');
+});
+
+test('the queue can be asked for what is part way through review, or for both', async (t) => {
+  for (const [filter, expected] of [
+    ['in_review', ['in_review']],
+    ['all', ['received', 'in_review']],
+    ['received', ['received']],
+  ]) {
+    const pool = queuePool();
+    const server = await startTestServer(MOUNTS, pool);
+
+    const res = await server.request(`/review-queue?status=${filter}`, { token: adminToken() });
+    assert.equal(res.status, 200, `status=${filter} was refused`);
+    assert.deepEqual(statusesAsked(pool), expected);
+
+    await server.close();
+  }
+});
+
+test('an unknown status filter is refused rather than silently widened', async (t) => {
+  // Falling back to everything would be the dangerous default: 'completed' and
+  // 'superseded' are not awaiting anyone and must never appear in a queue.
+  const pool = queuePool();
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request('/review-queue?status=completed', { token: adminToken() });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /received, in_review, all/);
+  assert.equal(pool.calls.length, 0);
+});
+
+test('a clean file is downloadable and is not flagged unscanned', async (t) => {
+  const pool = fakePool([
+    ['FROM company_files f\n       JOIN users u', [submittedFile(FILE_1, 'clean')]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/files`, { token: adminToken() });
+  assert.equal(res.body[0].downloadable, true);
+  assert.equal(res.body[0].downloadUnscanned, false);
+  assert.equal(res.body[0].downloadBlockedReason, null);
+});
+
+test('the published decision follows the scanner backend, it is not hard-coded to infected', async (t) => {
+  // The regression this guards. With a real backend configured, 'pending' means
+  // scanning has not finished, and the API refuses it. If the listing kept
+  // saying downloadable the UI would offer a button the server rejects, which is
+  // exactly the client-side rule CW006 §3 item 3 forbids.
+  const { setScanner, resetScanner } = await import('../src/services/scanner.js');
+  setScanner({ kind: 'clamav', describe: () => 'ClamAV', async scan() { return { state: 'clean' }; } });
+  t.after(() => resetScanner());
+
+  const pool = fakePool([
+    ['FROM company_files f\n       JOIN users u', [submittedFile(FILE_1, 'pending')]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/files`, { token: adminToken() });
+  assert.equal(res.body[0].downloadable, false);
+  assert.match(res.body[0].downloadBlockedReason, /not yet been cleared/);
+});
+
+// ---------------------------------------------------------------------------
+// Activation gates, through the route
+// ---------------------------------------------------------------------------
+
+test('activation is refused when the IEMS screen is missing, and nothing is seeded', async (t) => {
+  const pool = fakePool([
+    ['SELECT * FROM companies WHERE id = $1 FOR UPDATE', [{
+      id: COMPANY_A, legal_name: 'IMALIA', fund_id: 'fund-1', status: 'pending',
+      nda_executed_at: new Date('2026-07-01T00:00:00Z'), iems_screened_at: null,
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/activate`, {
+    method: 'POST', token: adminToken(), body: {},
+  });
+
+  assert.equal(res.status, 409);
+  assert.match(res.body.error, /IEMS screening date/);
+  assert.deepEqual(res.body.missingGates, ['iems_screened_at']);
+
+  const sql = pool.sql().join('\n');
+  assert.equal(sql.includes("SET status = 'active'"), false);
+  assert.equal(sql.includes('INSERT INTO company_irl_items'), false);
+  assert.ok(pool.sql().includes('ROLLBACK'));
+});
+
+test('activation is refused when the NDA is missing', async (t) => {
+  const pool = fakePool([
+    ['SELECT * FROM companies WHERE id = $1 FOR UPDATE', [{
+      id: COMPANY_A, legal_name: 'Example Bio', fund_id: 'fund-1', status: 'pending',
+      nda_executed_at: null, iems_screened_at: new Date(),
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/activate`, {
+    method: 'POST', token: adminToken(), body: {},
+  });
+  assert.equal(res.status, 409);
+  assert.match(res.body.error, /executed NDA date/);
+});
+
+test('activation with both gates seeds the checklist from the fund template', async (t) => {
+  const pool = fakePool([
+    ['SELECT * FROM companies WHERE id = $1 FOR UPDATE', [{
+      id: COMPANY_A, legal_name: 'Example Bio', fund_id: 'fund-1', status: 'pending',
+      nda_executed_at: new Date(), iems_screened_at: new Date(),
+    }]],
+    ['SELECT id, name FROM irl_templates WHERE fund_id', [{ id: 'template-1', name: 'Biotech IRL' }]],
+    ['FROM irl_template_items WHERE template_id', [
+      { id: 't1', section: '1. Corporate', ref: '1.1', description: 'Certificate', priority: 'medium', sort_order: 1, already_held: null, note_for_company: null },
+      { id: 't2', section: '1. Corporate', ref: '1.2', description: 'Cap table', priority: 'high', sort_order: 2, already_held: 'On file', note_for_company: null },
+    ]],
+    ['INSERT INTO company_irl_items', { rows: [{}], rowCount: 1 }],
+    ["SET status = 'active'", [{ id: COMPANY_A, status: 'active' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/activate`, {
+    method: 'POST', token: adminToken(), body: {},
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.seeded.templateItems, 2);
+  assert.equal(res.body.seeded.inserted, 2);
+
+  // An item Taranis already holds is seeded 'held', not 'outstanding'.
+  const seedInserts = pool.calls.filter((c) => c.text.includes('INSERT INTO company_irl_items'));
+  assert.equal(seedInserts.length, 2);
+  assert.equal(seedInserts[0].params[6], 'outstanding');
+  assert.equal(seedInserts[1].params[6], 'held');
+  // The baseline starts equal to the state and then stays put while the state
+  // follows the files, so an item Taranis holds in full still reads 'held' if
+  // every file submitted against it is later superseded (migration 016).
+  assert.equal(seedInserts[0].params[7], 'outstanding');
+  assert.equal(seedInserts[1].params[7], 'held');
+  // The insert skips conflicts, so re-activating a seeded company is safe.
+  assert.match(seedInserts[0].text, /ON CONFLICT \(company_id, ref\) DO NOTHING/);
+});
+
+test('a reviewer setting an item held moves its baseline with it', async (t) => {
+  // Without this the baseline would still say 'outstanding', and the next
+  // recompute with nothing submitted would quietly undo the reviewer.
+  const pool = fakePool([
+    ['SELECT level FROM company_reviewers', [{ level: 'write' }]],
+    ['UPDATE company_irl_items SET', [{ id: 'item-1', ref: '1.1', state: 'held' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/irl-items/item-1`, {
+    method: 'PATCH', token: adminToken(), body: { state: 'held' },
+  });
+
+  assert.equal(res.status, 200);
+  const update = pool.calls.find((c) => c.text.includes('UPDATE company_irl_items SET'));
+  assert.match(update.text, /baseline_state = \$4/);
+  assert.equal(update.params[2], 'held');
+  assert.equal(update.params[3], 'held');
+});
+
+test('a reviewer setting a derived state leaves the baseline alone', async (t) => {
+  // 'completed' describes the files, not what Taranis holds independently of
+  // them. Storing it as a baseline would freeze a snapshot as if it were a
+  // decision, and an item would then never fall back below it.
+  for (const state of ['completed', 'in_review', 'attention_needed', 'received', 'not_applicable']) {
+    const pool = fakePool([
+      ['SELECT level FROM company_reviewers', [{ level: 'write' }]],
+      ['UPDATE company_irl_items SET', [{ id: 'item-1', ref: '1.1', state }]],
+    ]);
+    const server = await startTestServer(MOUNTS, pool);
+
+    const res = await server.request(`/companies/${COMPANY_A}/irl-items/item-1`, {
+      method: 'PATCH', token: adminToken(), body: { state },
+    });
+    assert.equal(res.status, 200);
+
+    const update = pool.calls.find((c) => c.text.includes('UPDATE company_irl_items SET'));
+    assert.equal(update.text.includes('baseline_state'), false, `${state} must not set a baseline`);
+    await server.close();
+  }
+});
+
+test('an offboarded company cannot be reactivated through activate', async (t) => {
+  const pool = fakePool([
+    ['SELECT * FROM companies WHERE id = $1 FOR UPDATE', [{
+      id: COMPANY_A, legal_name: 'Example Bio', fund_id: 'fund-1', status: 'offboarded',
+      nda_executed_at: new Date(), iems_screened_at: new Date(),
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/activate`, {
+    method: 'POST', token: adminToken(), body: {},
+  });
+  assert.equal(res.status, 409);
+  assert.match(res.body.error, /cannot be reactivated/);
+});
+
+// ---------------------------------------------------------------------------
+// Invitations are sent by the platform, and still return a fallback link
+// ---------------------------------------------------------------------------
+
+test('inviting a company user queues the invitation and returns a fallback link', async (t) => {
+  const pool = fakePool([
+    // Active: an invitation to anything else is refused by the guard below.
+    ['SELECT * FROM companies WHERE id = $1', [{ id: COMPANY_A, legal_name: 'Example Bio', status: 'active' }]],
+    ['SELECT id, role FROM users WHERE email', []],
+    ['INSERT INTO users (email, display_name, role, status)', [{ id: 'user-9', display_name: 'A Contact' }]],
+    ['INSERT INTO company_users', [{ id: 'm-9', company_role: 'company_admin', nominated_by: null }]],
+    ['INSERT INTO invites', { rows: [] }],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/users`, {
+    method: 'POST',
+    token: adminToken(),
+    body: { email: 'Contact@ExampleBio.com', displayName: 'A Contact', companyRole: 'company_admin', isPrimary: true },
+  });
+
+  assert.equal(res.status, 201);
+  assert.equal(res.body.existingAccount, false, 'a new account was created');
+  assert.equal(res.body.displayName, 'A Contact');
+  // Absolute since Phase 1b: the same link goes in the email, where a relative
+  // one would be dead.
+  assert.match(res.body.inviteUrl, /^https?:\/\/.+\/invite\/accept\?token=/);
+  assert.match(res.body.message, /sent to the invitee by email/);
+
+  // The invitation is queued in the SAME transaction as the invite row, so a
+  // rollback below it can never leave an email announcing an invitation that
+  // does not exist.
+  const queued = pool.calls.find((c) => c.text.includes('INSERT INTO notification_outbox'));
+  assert.ok(queued, 'the invitation was not queued');
+  assert.equal(queued.params[0], 'company-invite');
+  assert.equal(queued.params[1], 'contact@examplebio.com');
+
+  // The email address is normalised before it reaches the users table.
+  const insert = pool.calls.find((c) => c.text.includes('INSERT INTO users (email'));
+  assert.equal(insert.params[0], 'contact@examplebio.com');
+  // The invite is created with role 'company'.
+  const invite = pool.calls.find((c) => c.text.includes('INSERT INTO invites'));
+  assert.match(invite.text, /'company'/);
+});
+
+// ---------------------------------------------------------------------------
+// An existing account keeps its own name (HANDOVER-CW012 §3.4)
+// ---------------------------------------------------------------------------
+
+/** The world in which `email` already belongs to a company account. */
+function existingUserPool(displayName = 'Rhys Walker') {
+  return fakePool([
+    ['SELECT * FROM companies WHERE id = $1', [{ id: COMPANY_A, legal_name: 'Example Bio', status: 'active' }]],
+    ['SELECT id, role FROM users WHERE email', [{ id: 'user-7', role: 'company' }]],
+    // ON CONFLICT DO NOTHING returns no row when the address is already taken.
+    ['INSERT INTO users (email, display_name, role, status)', []],
+    ['SELECT id, display_name FROM users WHERE email', [{ id: 'user-7', display_name: displayName }]],
+    ['INSERT INTO company_users', [{ id: 'm-7', company_role: 'company_admin', nominated_by: null }]],
+    ['INSERT INTO invites', { rows: [] }],
+  ]);
+}
+
+test('inviting an address that already has an account does not rename it', async (t) => {
+  const pool = existingUserPool('Rhys Walker');
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/users`, {
+    method: 'POST',
+    token: adminToken(),
+    body: { email: 'rhys@example.com', displayName: 'Somebody Else', companyRole: 'company_admin' },
+  });
+
+  assert.equal(res.status, 201);
+  assert.equal(res.body.existingAccount, true);
+  assert.equal(res.body.displayName, 'Rhys Walker');
+
+  // The insert must not carry an UPDATE of the name. Before CW012 it did, so
+  // inviting a known address silently renamed that person.
+  const insert = pool.calls.find((c) => c.text.includes('INSERT INTO users (email'));
+  assert.match(insert.text, /ON CONFLICT \(email\) DO NOTHING/);
+  assert.ok(
+    !/DO UPDATE SET display_name/.test(insert.text),
+    'an existing account must not be renamed by an invitation'
+  );
+});
+
+test('the invitation greets the name on the account, not the one typed', async (t) => {
+  const pool = existingUserPool('Rhys Walker');
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  await server.request(`/companies/${COMPANY_A}/users`, {
+    method: 'POST',
+    token: adminToken(),
+    body: { email: 'rhys@example.com', displayName: 'Somebody Else' },
+  });
+
+  const queued = pool.calls.find((c) => c.text.includes('INSERT INTO notification_outbox'));
+  const payload = JSON.parse(queued.params[2]);
+  assert.equal(payload.first_name, 'Rhys', 'the greeting comes from the stored name');
+});
+
+test('GET /companies/:id/users/lookup reports an existing account and its membership', async (t) => {
+  const pool = fakePool([
+    ['LEFT JOIN company_users cu ON cu.user_id = u.id', [{
+      id: 'user-7', display_name: 'Rhys Walker', role: 'company', status: 'active',
+      company_id: COMPANY_A, company_role: 'company_admin', deactivated_at: null,
+      company_name: 'Example Bio',
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(
+    `/companies/${COMPANY_A}/users/lookup?email=Rhys%40Example.com`,
+    { token: adminToken() }
+  );
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.exists, true);
+  assert.equal(res.body.displayName, 'Rhys Walker');
+  assert.equal(res.body.blocked, null);
+  assert.equal(res.body.membership.thisCompany, true);
+  assert.equal(res.body.membership.companyName, 'Example Bio');
+
+  // Looked up on the normalised address, or a capitalised one would miss.
+  const lookup = pool.calls.find((c) => c.text.includes('LEFT JOIN company_users'));
+  assert.equal(lookup.params[0], 'rhys@example.com');
+});
+
+test('the lookup flags a fund-side account as blocked before anything is created', async (t) => {
+  const pool = fakePool([
+    ['LEFT JOIN company_users cu ON cu.user_id = u.id', [{
+      id: 'user-3', display_name: 'An Investor', role: 'investor', status: 'active',
+      company_id: null, company_role: null, deactivated_at: null, company_name: null,
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(
+    `/companies/${COMPANY_A}/users/lookup?email=investor@example.com`,
+    { token: adminToken() }
+  );
+
+  assert.equal(res.body.fundSideAccount, true);
+  assert.match(res.body.blocked, /fund-side account/);
+  assert.equal(res.body.membership, null);
+});
+
+test('the lookup says nothing about an address with no account', async (t) => {
+  const server = await startTestServer(MOUNTS, fakePool([]));
+  t.after(() => server.close());
+
+  const res = await server.request(
+    `/companies/${COMPANY_A}/users/lookup?email=nobody@example.com`,
+    { token: adminToken() }
+  );
+  assert.deepEqual(res.body, { exists: false });
+});
+
+test('the lookup needs an email, and is admin only', async (t) => {
+  const server = await startTestServer(MOUNTS, fakePool([
+    ['SELECT level FROM company_reviewers', [{ level: 'reviewer' }]],
+  ]));
+  t.after(() => server.close());
+
+  const noEmail = await server.request(`/companies/${COMPANY_A}/users/lookup`, { token: adminToken() });
+  assert.equal(noEmail.status, 400);
+
+  // A named reviewer on this very company still cannot ask about an address.
+  const reviewer = await server.request(
+    `/companies/${COMPANY_A}/users/lookup?email=rhys@example.com`,
+    { token: tokenFor({ role: 'advisor', sub: 'adv-1' }) }
+  );
+  assert.equal(reviewer.status, 403);
+
+  const companyUser = await server.request(
+    `/companies/${COMPANY_A}/users/lookup?email=rhys@example.com`,
+    { token: companyAdminToken() }
+  );
+  assert.equal(companyUser.status, 403);
+});
+
+test('the lookup path is not swallowed by GET /companies/:id/users', async (t) => {
+  const pool = fakePool([
+    ['LEFT JOIN company_users cu ON cu.user_id = u.id', []],
+    // If routing fell through to the listing, this handler would answer instead.
+    ['FROM company_users cu\n       JOIN users u', [{ id: 'm-1', user_id: 'u-1' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(
+    `/companies/${COMPANY_A}/users/lookup?email=nobody@example.com`,
+    { token: adminToken() }
+  );
+  assert.deepEqual(res.body, { exists: false }, 'the lookup answered, not the listing');
+});
+
+test('a fund-side account is never converted into a company account', async (t) => {
+  const pool = fakePool([
+    ['SELECT * FROM companies WHERE id = $1', [{ id: COMPANY_A, legal_name: 'Example Bio', status: 'active' }]],
+    ['SELECT id, role FROM users WHERE email', [{ id: 'user-7', role: 'investor' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/users`, {
+    method: 'POST',
+    token: adminToken(),
+    body: { email: 'investor@example.com', displayName: 'An Investor' },
+  });
+
+  assert.equal(res.status, 409);
+  assert.match(res.body.error, /fund-side account/);
+  assert.ok(pool.sql().includes('ROLLBACK'));
+});
+
+// ---------------------------------------------------------------------------
+// No invitation before activation (HANDOVER-CW005)
+//
+// The trap this closes: an invitation issued to a pending company is accepted,
+// the person enrols in MFA, signs in, and lands in nothing, because the
+// workspace does not exist until activation seeds it and `requireCompany`
+// refuses a pending company outright.
+// ---------------------------------------------------------------------------
+
+test('an invitation is refused for a company that is not active, and nothing is written', async (t) => {
+  const expected = {
+    pending: /pending/i,
+    suspended: /suspended/i,
+    offboarded: /offboarded/i,
+  };
+
+  for (const [status, pattern] of Object.entries(expected)) {
+    const pool = fakePool([
+      ['SELECT * FROM companies WHERE id = $1', [{
+        id: COMPANY_A, legal_name: 'Example Bio', status,
+      }]],
+    ]);
+    const server = await startTestServer(MOUNTS, pool);
+
+    const res = await server.request(`/companies/${COMPANY_A}/users`, {
+      method: 'POST',
+      token: adminToken(),
+      body: { email: 'contact@examplebio.com', displayName: 'A Contact', isPrimary: true },
+    });
+
+    assert.equal(res.status, 409, `a ${status} company should refuse an invitation`);
+    assert.match(res.body.error, pattern);
+    assert.equal(res.body.companyStatus, status);
+
+    // No user, no membership, no invite, and the transaction was rolled back.
+    // The refusal lands before the email is even looked up.
+    const sql = pool.sql().join('\n');
+    assert.equal(sql.includes('INSERT INTO users'), false, `${status}: no user may be created`);
+    assert.equal(sql.includes('INSERT INTO company_users'), false, `${status}: no membership`);
+    assert.equal(sql.includes('INSERT INTO invites'), false, `${status}: no invite row`);
+    assert.equal(sql.includes('SELECT id, role FROM users WHERE email'), false);
+    assert.ok(pool.sql().includes('ROLLBACK'), `${status}: the transaction should roll back`);
+
+    await server.close();
+  }
+});
+
+test('the pending refusal tells the admin what to do about it', async (t) => {
+  const pool = fakePool([
+    ['SELECT * FROM companies WHERE id = $1', [{
+      id: COMPANY_A, legal_name: 'Example Bio', status: 'pending',
+    }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/users`, {
+    method: 'POST',
+    token: adminToken(),
+    body: { email: 'contact@examplebio.com', displayName: 'A Contact' },
+  });
+
+  assert.equal(res.status, 409);
+  assert.match(res.body.error, /activation gates/);
+  assert.match(res.body.error, /activate/i);
+});
+
+test('approving a nomination is refused too, because it runs through the same endpoint', async (t) => {
+  // A company admin can only nominate from inside an active workspace, so this
+  // is belt and braces rather than a live path. It is asserted because the
+  // approval and the direct invitation share one handler, and a future split
+  // must not leave the approval unguarded.
+  const pool = fakePool([
+    ['SELECT * FROM companies WHERE id = $1', [{
+      id: COMPANY_A, legal_name: 'Example Bio', status: 'suspended',
+    }]],
+    ['SELECT id, role FROM users WHERE email', [{ id: 'user-9', role: 'company' }]],
+  ]);
+  const server = await startTestServer(MOUNTS, pool);
+  t.after(() => server.close());
+
+  const res = await server.request(`/companies/${COMPANY_A}/users`, {
+    method: 'POST',
+    token: adminToken(),
+    body: {
+      email: 'nominee@examplebio.com',
+      displayName: 'A Nominee',
+      companyRole: 'company_contributor',
+    },
+  });
+
+  assert.equal(res.status, 409);
+  assert.equal(res.body.companyStatus, 'suspended');
+  // The existing membership row is untouched: this approves nothing.
+  assert.equal(pool.sql().join('\n').includes('INSERT INTO company_users'), false);
+});

@@ -21,10 +21,15 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
+      # v6, not v5. v5 is still a node20 action, so it would have left the
+      # deprecation warning exactly where it was; node24 arrives in v6, and
+      # that is the whole reason for the bump. Its other breaking change,
+      # stricter handling of invalid boolean inputs, cannot bite here because
+      # this step passes no booleans.
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

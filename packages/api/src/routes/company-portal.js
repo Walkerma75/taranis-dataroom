@@ -1,0 +1,1593 @@
+/**
+ * Company portal routes — the counterparty's own view of its due diligence.
+ *
+ * EVERY query in this file is scoped by `req.company.id`, which
+ * `requireCompany()` resolved from the JWT `companyId` claim. No handler here
+ * reads a company id from a path, query or body parameter. That is what makes
+ * cross-company access impossible rather than merely refused: there is no id
+ * for a company user to guess at, because no id they could supply is ever used.
+ *
+ * Lookups by item or file id are still written `WHERE id = $1 AND company_id =
+ * $2`, so a guessed id from another company returns 404 rather than leaking the
+ * existence of the row.
+ *
+ * EMAIL. Phase 1b queues notifications through `services/notifications.js`.
+ * Every `queue()` call passes the transaction's `client`, so a message commits
+ * with the upload or submission it announces, and a rollback takes it with it.
+ * No handler here waits on SES: a company's upload must not fail because a
+ * third party is slow.
+ */
+import { Router } from 'express';
+import multer from 'multer';
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { pool } from '../db.js';
+import { requireAuth, requireCompany, requireCompanyRole } from '../middleware/auth.js';
+import { logAudit } from '../services/audit.js';
+import { getStorage, StorageNotFoundError, STAGING_ROOT } from '../services/storage.js';
+import { getScanner, downloadDecision } from '../services/scanner.js';
+import { storeCompanyUpload, cleanupCompanyStaging } from '../services/company-files.js';
+import { companySharedView } from '../services/company-shared.js';
+import { contentDispositionFilename } from '../services/document-files.js';
+import {
+  COMPANY_ALLOWED_EXTENSIONS,
+  COMPANY_MAX_FILE_BYTES,
+  companyVisibleItems,
+  companySafeItem,
+  summariseProgress,
+  recomputeItemState,
+  nextReceiptRef,
+} from '../services/companies.js';
+import {
+  queue,
+  adminRecipient,
+  firstNameOf,
+  formatBytes,
+  formatDateTimeUtc,
+  shortDescription,
+} from '../services/notifications.js';
+import { adminNominationUrl, adminReviewUrl, companyReceiptsUrl } from '../services/links.js';
+import {
+  FAMILIES,
+  queueDigestEvent,
+  sessionDigestsEnabled,
+} from '../services/notification-digests.js';
+import {
+  statementLabel,
+  statementFields,
+  validateStatementInput,
+  isStatement,
+  expectedByFrom,
+} from '../services/company-statements.js';
+
+/**
+ * How a proposed company role reads in the nomination email. The stored values
+ * are enum-ish and would look like database internals in a message to a person.
+ */
+const COMPANY_ROLE_LABELS = {
+  company_admin: 'Company Administrator',
+  company_contributor: 'Contributor',
+  company_viewer: 'Viewer',
+};
+
+/**
+ * `{{domain_check_result}}`, in words.
+ *
+ * Whether the nominee's email domain matches the company's registered domains
+ * is the one signal an approver has that a nomination is what it claims to be,
+ * so it says which domain it checked rather than just yes or no. A company with
+ * no registered domains cannot be checked at all, and saying so is more use
+ * than a bare 'no'.
+ */
+function domainCheckResult(domainMatched, domain) {
+  if (domainMatched === null || domainMatched === undefined) {
+    return 'Not checked: no email domains are registered for this company';
+  }
+  return domainMatched
+    ? `Matched the company's registered domain (${domain})`
+    : `NO MATCH: ${domain} is not a registered domain for this company`;
+}
+
+/**
+ * The `ref` and description of one checklist item, for a notification.
+ *
+ * Scoped by company id like every other lookup in this file, even though the
+ * item id came from a row already proven to belong to this company: the rule is
+ * that no query here trusts an id it did not scope itself.
+ *
+ * Returns null for a file uploaded as additional material, which has no item.
+ */
+async function itemSummary(irlItemId, companyId) {
+  if (!irlItemId) return null;
+  const { rows: [item] } = await pool.query(
+    `SELECT ref, description FROM company_irl_items WHERE id = $1 AND company_id = $2`,
+    [irlItemId, companyId]
+  );
+  return item || null;
+}
+
+/**
+ * Queue the admin upload notification.
+ *
+ * Shared by the upload and the replace handlers, which announce the same event
+ * and differ only in whether the file has a predecessor.
+ *
+ * A failure here is logged and swallowed. Both call sites reach this AFTER the
+ * file row is committed and audited, so the upload has already succeeded; a
+ * 500 at this point would tell a company its upload failed when the bytes are
+ * safely in S3 and the row is in the database. The notification is the least
+ * important thing that happened in the request and must behave like it.
+ *
+ * With session digests on (the default, HANDOVER-CW025) this records a digest
+ * event instead, and the admin receives one `upload-digest` per company per
+ * sitting listing every file. Switched off, it is the per-upload message it
+ * always was.
+ */
+async function queueUploadNotification(req, { fileId, files, itemRef }) {
+  try {
+    if (sessionDigestsEnabled()) {
+      await queueDigestEvent(pool, {
+        family: FAMILIES.UPLOADS,
+        recipient: adminRecipient(),
+        companyId: req.company.id,
+        event: { fileId },
+      });
+      return;
+    }
+
+    await queue(pool, {
+      template: 'upload-notification',
+      recipient: adminRecipient(),
+      payload: {
+        company_name: req.company.legalName,
+        uploader_name: req.user.name || req.user.email,
+        file_count: files.length,
+        item_ref_or_additional: itemRef || 'additional material',
+        files,
+        admin_review_url: adminReviewUrl(),
+      },
+    });
+  } catch (err) {
+    console.error('[company] Could not queue the upload notification:', err.message);
+  }
+}
+
+const stagingStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    try {
+      fs.mkdirSync(STAGING_ROOT, { recursive: true });
+      cb(null, fs.mkdtempSync(path.join(STAGING_ROOT, 'company-upload-')));
+    } catch (err) {
+      cb(err);
+    }
+  },
+  filename: (_req, file, cb) => {
+    const unique = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+    cb(null, `${unique}${path.extname(file.originalname)}`);
+  },
+});
+
+const upload = multer({
+  storage: stagingStorage,
+  limits: { fileSize: COMPANY_MAX_FILE_BYTES },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (COMPANY_ALLOWED_EXTENSIONS.includes(ext)) cb(null, true);
+    else cb(new Error(`File type ${ext} is not accepted`));
+  },
+});
+
+const router = Router();
+router.use(requireAuth, requireCompany());
+
+/**
+ * Shape a file row for a company-facing response.
+ *
+ * A "cannot provide" response (HANDOVER-CW026) comes through here too: its
+ * `filename` is its display label, `kind` says what it is, and `sizeBytes` is
+ * null rather than 0 so no client mistakes an empty file for no file.
+ */
+function companyFileView(f) {
+  return {
+    id: f.id,
+    irlItemId: f.irl_item_id,
+    filename: f.filename,
+    description: f.description,
+    ...statementFields(f),
+    contentType: f.content_type,
+    version: f.version,
+    supersedes: f.supersedes,
+    uploadState: f.upload_state,
+    status: f.status,
+    uploadedAt: f.created_at,
+    uploadedBy: f.uploaded_by_name,
+    receiptRef: f.receipt_ref || null,
+    submittedAt: f.submitted_at || null,
+    // The note a reviewer left with the current status. A note is mandatory on
+    // 'attention_needed' precisely so the company knows what to fix, so it has
+    // to reach them: a flag with no explanation is a wasted round trip.
+    // file_status_history holds only reviewer notes, never internal notes,
+    // which live on company_irl_items.internal_note and are stripped elsewhere.
+    statusNote: f.status_note || null,
+    statusSetAt: f.status_set_at || null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// GET /company/workspace — the checklist dashboard
+// ---------------------------------------------------------------------------
+router.get('/workspace', async (req, res) => {
+  try {
+    const { rows: items } = await pool.query(
+      `SELECT i.*,
+              (SELECT COUNT(*) FROM company_files f
+                WHERE f.irl_item_id = i.id AND f.deleted_at IS NULL
+                  AND f.upload_state = 'submitted')                    AS submitted_files,
+              (SELECT COUNT(*) FROM company_files f
+                WHERE f.irl_item_id = i.id AND f.deleted_at IS NULL
+                  AND f.upload_state = 'staged')                       AS staged_files
+       FROM company_irl_items i
+       WHERE i.company_id = $1
+       ORDER BY i.sort_order`,
+      [req.company.id]
+    );
+
+    const visible = companyVisibleItems(items);
+
+    res.json({
+      company: {
+        id: req.company.id,
+        legalName: req.company.legalName,
+      },
+      membership: {
+        role: req.companyMembership.role,
+        isPrimary: req.companyMembership.isPrimary,
+      },
+      progress: summariseProgress(visible),
+      items: visible.map((i) => ({
+        ...companySafeItem({
+          id: i.id,
+          section: i.section,
+          ref: i.ref,
+          description: i.description,
+          priority: i.priority,
+          state: i.state,
+          note_for_company: i.note_for_company,
+          sort_order: i.sort_order,
+        }),
+        submittedFiles: Number(i.submitted_files),
+        stagedFiles: Number(i.staged_files),
+      })),
+    });
+  } catch (err) {
+    console.error('[company] Workspace error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /company/items/:itemId
+// ---------------------------------------------------------------------------
+router.get('/items/:itemId', async (req, res) => {
+  try {
+    const { rows: [item] } = await pool.query(
+      `SELECT * FROM company_irl_items WHERE id = $1 AND company_id = $2`,
+      [req.params.itemId, req.company.id]
+    );
+    // Same 404 whether the item belongs to another company or does not exist.
+    if (!item) return res.status(404).json({ error: 'Item not found' });
+    if (item.state === 'held') return res.status(404).json({ error: 'Item not found' });
+
+    const { rows: files } = await pool.query(
+      `SELECT f.*, u.display_name AS uploaded_by_name,
+              b.receipt_ref, b.submitted_at,
+              h.note AS status_note, h.created_at AS status_set_at,
+              ri.ref AS related_item_ref
+       FROM company_files f
+       JOIN users u ON u.id = f.uploaded_by
+       LEFT JOIN submission_batches b ON b.id = f.batch_id
+       -- The item a 'provided_elsewhere' response points at, for its link.
+       LEFT JOIN company_irl_items ri ON ri.id = f.related_item_id AND ri.company_id = f.company_id
+       -- The most recent status entry for this file. LATERAL rather than a
+       -- correlated subquery so the note and its timestamp come from the same
+       -- row: two subqueries could disagree if a status changed mid-query.
+       LEFT JOIN LATERAL (
+         SELECT note, created_at FROM file_status_history
+          WHERE file_id = f.id ORDER BY created_at DESC LIMIT 1
+       ) h ON TRUE
+       WHERE f.irl_item_id = $1 AND f.company_id = $2 AND f.deleted_at IS NULL
+       ORDER BY f.created_at DESC`,
+      [item.id, req.company.id]
+    );
+
+    res.json({
+      item: companySafeItem({
+        id: item.id,
+        section: item.section,
+        ref: item.ref,
+        description: item.description,
+        priority: item.priority,
+        state: item.state,
+        note_for_company: item.note_for_company,
+        internal_note: item.internal_note,   // stripped by companySafeItem
+      }),
+      // "Expected by the company: 30 October 2026", from an accepted or pending
+      // not-yet-available response (CW026 §3.7 item 4).
+      expectedBy: expectedByFrom(files),
+      files: files.map(companyFileView),
+    });
+  } catch (err) {
+    console.error('[company] Item detail error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /company/files — upload into staging
+// ---------------------------------------------------------------------------
+router.post(
+  '/files',
+  requireCompanyRole('company_admin', 'company_contributor'),
+  upload.single('file'),
+  async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'A file is required' });
+
+    const { irlItemId, description } = req.body;
+
+    if (!description || !description.trim()) {
+      cleanupCompanyStaging(req.file.destination);
+      return res.status(400).json({ error: 'A description is required for every file' });
+    }
+
+    // Kept for the notification: which checklist item this upload answers.
+    // `ref` and `description` are selected here rather than re-queried later so
+    // the upload path still makes exactly one lookup.
+    let uploadedAgainst = null;
+
+    try {
+      // If an item was named, it must be this company's, and one the company
+      // is allowed to see.
+      if (irlItemId) {
+        const { rows: [item] } = await pool.query(
+          `SELECT id, state, ref, description FROM company_irl_items
+            WHERE id = $1 AND company_id = $2`,
+          [irlItemId, req.company.id]
+        );
+        if (!item || item.state === 'held') {
+          cleanupCompanyStaging(req.file.destination);
+          return res.status(404).json({ error: 'Item not found' });
+        }
+        uploadedAgainst = item;
+      }
+
+      const fileId = crypto.randomUUID();
+      const storage = await getStorage();
+      const scanner = getScanner();
+
+      const stored = await storeCompanyUpload({
+        file: req.file,
+        companyId: req.company.id,
+        fileId,
+        irlItemId: irlItemId || null,
+        storage,
+        scanner,
+      });
+
+      if (!stored.stored) {
+        await logAudit({
+          action: 'company_file.uploaded',
+          userId: req.user.sub,
+          resource: 'company',
+          resourceId: req.company.id,
+          detail: {
+            filename: req.file.originalname,
+            rejected: true,
+            scanState: stored.verdict.state,
+          },
+          ip: req.ip,
+        });
+        return res.status(422).json({
+          error: 'This file did not pass the security scan and has not been accepted.',
+        });
+      }
+
+      const { rows: [row] } = await pool.query(
+        `INSERT INTO company_files
+           (id, company_id, irl_item_id, uploaded_by, filename, description,
+            s3_key, size_bytes, content_type, upload_state, scan_state,
+            scan_backend, scanned_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'staged', $10, $11, NOW())
+         RETURNING *`,
+        [
+          fileId, req.company.id, irlItemId || null, req.user.sub,
+          stored.filename, description.trim(), stored.key, stored.size,
+          stored.contentType || 'application/octet-stream',
+          stored.verdict.state, stored.verdict.backend,
+        ]
+      );
+
+      await logAudit({
+        action: 'company_file.uploaded',
+        userId: req.user.sub,
+        resource: 'company_file',
+        resourceId: row.id,
+        detail: {
+          companyId: req.company.id,
+          filename: stored.filename,
+          size: stored.size,
+          irlItemId: irlItemId || null,
+          scanState: stored.verdict.state,
+          scanBackend: stored.verdict.backend,
+        },
+        ip: req.ip,
+      });
+
+      // Decision 8 (HANDOVER-C003 §5.5) was per-event with no digest; CW025
+      // replaced it with one digest per sitting, which is what
+      // queueUploadNotification now records unless digests are switched off.
+      // This handler has no transaction of its own — the file row is a single
+      // INSERT — so either row is written on the pool. It is queued after the
+      // file row exists, so an admin can never be told about a file that failed
+      // to insert.
+      await queueUploadNotification(req, {
+        fileId: row.id,
+        files: [{
+          filename: stored.filename,
+          size: formatBytes(stored.size),
+          item_ref: uploadedAgainst?.ref || '',
+          item_description_short: shortDescription(uploadedAgainst?.description),
+          description: description.trim(),
+        }],
+        itemRef: uploadedAgainst?.ref,
+      });
+
+      res.status(201).json(companyFileView(row));
+    } catch (err) {
+      console.error('[company] Upload error:', err);
+      cleanupCompanyStaging(req.file.destination);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// POST /company/files/:fileId/replace — a new version of an existing file
+// ---------------------------------------------------------------------------
+router.post(
+  '/files/:fileId/replace',
+  requireCompanyRole('company_admin', 'company_contributor'),
+  upload.single('file'),
+  async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'A file is required' });
+    const { description } = req.body;
+
+    if (!description || !description.trim()) {
+      cleanupCompanyStaging(req.file.destination);
+      return res.status(400).json({ error: 'A description is required for every file' });
+    }
+
+    try {
+      const { rows: [previous] } = await pool.query(
+        `SELECT * FROM company_files
+         WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`,
+        [req.params.fileId, req.company.id]
+      );
+      if (!previous) {
+        cleanupCompanyStaging(req.file.destination);
+        return res.status(404).json({ error: 'File not found' });
+      }
+
+      // A version that has already been overtaken is not the one to replace.
+      // The item page hides the button on those rows, but the rule belongs here:
+      // a version chain that forks produces two files both numbered N+1, and a
+      // UI-only rule is a courtesy, not a constraint.
+      if (previous.status === 'superseded') {
+        cleanupCompanyStaging(req.file.destination);
+        return res.status(409).json({
+          error: 'This version has already been replaced. '
+               + 'Upload the newer version of it instead.',
+        });
+      }
+
+      // A response that has not been submitted is not on the record yet, so
+      // there is nothing to supersede: it is removed, and the document added in
+      // the ordinary way. Replacing a SUBMITTED response with the document is
+      // the normal path when a not-yet-available item arrives (CW026 §3.2).
+      if (isStatement(previous) && previous.upload_state === 'staged') {
+        cleanupCompanyStaging(req.file.destination);
+        return res.status(409).json({
+          error: 'This response has not been submitted yet. Remove it and add the document instead.',
+        });
+      }
+
+      const fileId = crypto.randomUUID();
+      const storage = await getStorage();
+      const scanner = getScanner();
+
+      const stored = await storeCompanyUpload({
+        file: req.file,
+        companyId: req.company.id,
+        fileId,
+        irlItemId: previous.irl_item_id,
+        storage,
+        scanner,
+      });
+
+      if (!stored.stored) {
+        return res.status(422).json({
+          error: 'This file did not pass the security scan and has not been accepted.',
+        });
+      }
+
+      const { rows: [row] } = await pool.query(
+        `INSERT INTO company_files
+           (id, company_id, irl_item_id, uploaded_by, filename, description,
+            s3_key, size_bytes, content_type, version, supersedes,
+            upload_state, scan_state, scan_backend, scanned_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'staged', $12, $13, NOW())
+         RETURNING *`,
+        [
+          fileId, req.company.id, previous.irl_item_id, req.user.sub,
+          stored.filename, description.trim(), stored.key, stored.size,
+          stored.contentType || 'application/octet-stream',
+          previous.version + 1, previous.id,
+          stored.verdict.state, stored.verdict.backend,
+        ]
+      );
+
+      await logAudit({
+        action: 'company_file.replaced',
+        userId: req.user.sub,
+        resource: 'company_file',
+        resourceId: row.id,
+        detail: {
+          companyId: req.company.id,
+          supersedes: previous.id,
+          version: row.version,
+          filename: stored.filename,
+        },
+        ip: req.ip,
+      });
+
+      if (previous.irl_item_id) await recomputeItemState(previous.irl_item_id);
+
+      // A replacement is an upload as far as the review side is concerned: a
+      // new version has arrived and somebody needs to look at it. The version
+      // number rides in the description line so the notification does not read
+      // as a duplicate of the one announcing version 1.
+      const item = await itemSummary(previous.irl_item_id, req.company.id);
+      await queueUploadNotification(req, {
+        fileId: row.id,
+        files: [{
+          filename: stored.filename,
+          size: formatBytes(stored.size),
+          item_ref: item?.ref || '',
+          item_description_short: shortDescription(item?.description),
+          description: `${description.trim()} (version ${row.version})`,
+        }],
+        itemRef: item?.ref,
+      });
+
+      res.status(201).json(companyFileView(row));
+    } catch (err) {
+      console.error('[company] Replace error:', err);
+      cleanupCompanyStaging(req.file.destination);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// "Cannot provide" responses (HANDOVER-CW026)
+//
+// A response is a `company_files` row with kind 'statement' (migration 022): a
+// reason and an explanation, and no bytes. It is staged, submitted by the
+// Company Administrator under a receipt, reviewed and superseded exactly as a
+// file is, so from here on every existing path handles it. Only creating and
+// editing one are its own.
+//
+// ONE CURRENT RESPONSE PER ITEM. Enforced under a lock on the item row, so two
+// people pressing the button at once cannot both succeed, and backed for the
+// staged half by migration 022's partial unique index. The one exception is a
+// replacement, which is staged beside the submitted response it replaces and
+// retires it at submission, not before (the CW010 rule).
+// ---------------------------------------------------------------------------
+
+/** Postgres unique_violation, which the staged-response index raises. */
+const UNIQUE_VIOLATION = '23505';
+
+/**
+ * Check a 'provided_elsewhere' target: another of this company's own items,
+ * visible to it, and not the item being answered. Returns its ref, or an error.
+ */
+async function relatedItemCheck(db, { relatedItemId, itemId, companyId }) {
+  if (relatedItemId === itemId) {
+    return { error: 'Choose a different item from this one.' };
+  }
+  const { rows: [related] } = await db.query(
+    `SELECT id, ref, state FROM company_irl_items WHERE id = $1 AND company_id = $2`,
+    [relatedItemId, companyId]
+  );
+  // Same answer for another company's item and a hidden one: neither is
+  // something this company can point at.
+  if (!related || related.state === 'held') {
+    return { error: 'Choose one of the items on your own information request list.' };
+  }
+  return { ref: related.ref };
+}
+
+router.post(
+  '/statements',
+  requireCompanyRole('company_admin', 'company_contributor'),
+  async (req, res) => {
+    const checked = validateStatementInput(req.body);
+    if (checked.error) return res.status(400).json({ error: checked.error });
+    const { reason, explanation, expectedDate, relatedItemId } = checked.value;
+    const replacesFileId = req.body?.replacesFileId ? String(req.body.replacesFileId) : null;
+
+    const client = await pool.connect();
+    const refuse = async (status, error) => {
+      await client.query('ROLLBACK');
+      return res.status(status).json({ error });
+    };
+
+    try {
+      await client.query('BEGIN');
+
+      // What it replaces, if anything, decides which item it answers. A staged
+      // FILE was never sent, so there is nothing to supersede: it is removed
+      // in this transaction and the response takes its place.
+      let previous = null;
+      let removedStaged = null;
+      let irlItemId = req.body?.irlItemId ? String(req.body.irlItemId) : null;
+      if (replacesFileId) {
+        const { rows: [row] } = await client.query(
+          `SELECT id, irl_item_id, version, status, upload_state, kind
+             FROM company_files
+            WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`,
+          [replacesFileId, req.company.id]
+        );
+        if (!row) return refuse(404, 'File not found');
+        if (row.status === 'superseded') {
+          return refuse(409, 'This version has already been replaced. Replace the newer version of it instead.');
+        }
+        if (!row.irl_item_id) {
+          return refuse(400, 'A response can only be given against a checklist item, not an additional document.');
+        }
+        if (row.kind === 'statement' && row.upload_state === 'staged') {
+          return refuse(409, 'This response has not been submitted yet. Edit it instead.');
+        }
+        if (row.upload_state === 'staged') removedStaged = row;
+        else previous = row;
+        irlItemId = row.irl_item_id;
+      }
+      if (!irlItemId) return refuse(400, 'Choose the checklist item this response is for.');
+
+      // The item, locked for the rest of the transaction.
+      const { rows: [item] } = await client.query(
+        `SELECT id, ref, description, state FROM company_irl_items
+          WHERE id = $1 AND company_id = $2
+          FOR UPDATE`,
+        [irlItemId, req.company.id]
+      );
+      if (!item || item.state === 'held') return refuse(404, 'Item not found');
+
+      let relatedItemRef = null;
+      if (reason === 'provided_elsewhere') {
+        const related = await relatedItemCheck(client, {
+          relatedItemId, itemId: item.id, companyId: req.company.id,
+        });
+        if (related.error) return refuse(400, related.error);
+        relatedItemRef = related.ref;
+      }
+
+      const { rows: current } = await client.query(
+        `SELECT id, upload_state FROM company_files
+          WHERE irl_item_id = $1 AND company_id = $2 AND kind = 'statement'
+            AND deleted_at IS NULL AND (status IS NULL OR status <> 'superseded')`,
+        [item.id, req.company.id]
+      );
+      const others = current.filter((s) => s.id !== previous?.id);
+      if (others.some((s) => s.upload_state === 'staged')) {
+        return refuse(409, 'This item already has a response waiting to be submitted. Edit or remove that one instead.');
+      }
+      if (others.length) {
+        return refuse(409, 'This item already has a response on record. Use Replace this response on it instead.');
+      }
+
+      if (removedStaged) {
+        await client.query(
+          `UPDATE company_files SET deleted_at = NOW()
+            WHERE id = $1 AND company_id = $2 AND upload_state = 'staged' AND deleted_at IS NULL`,
+          [removedStaged.id, req.company.id]
+        );
+      }
+
+      const label = statementLabel({ reason, expectedDate, relatedItemRef });
+      const { rows: [row] } = await client.query(
+        `INSERT INTO company_files
+           (company_id, irl_item_id, uploaded_by, filename, description, kind,
+            statement_reason, expected_date, related_item_id,
+            s3_key, size_bytes, content_type, scan_state,
+            version, supersedes, upload_state)
+         VALUES ($1, $2, $3, $4, $5, 'statement', $6, $7, $8,
+                 NULL, NULL, NULL, NULL, $9, $10, 'staged')
+         RETURNING *`,
+        [
+          req.company.id, item.id, req.user.sub, label, explanation,
+          reason, expectedDate, relatedItemId,
+          previous ? previous.version + 1 : 1, previous?.id || null,
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      if (removedStaged) {
+        await logAudit({
+          action: 'company_file.deleted_staged',
+          userId: req.user.sub,
+          resource: 'company_file',
+          resourceId: removedStaged.id,
+          detail: { companyId: req.company.id, kind: 'file', replacedByStatement: row.id },
+          ip: req.ip,
+        });
+      }
+
+      // Distinguishable from an upload in the audit trail by its action name.
+      await logAudit({
+        action: 'company_statement.recorded',
+        userId: req.user.sub,
+        resource: 'company_file',
+        resourceId: row.id,
+        detail: {
+          companyId: req.company.id,
+          irlItemId: item.id,
+          kind: 'statement',
+          reason,
+          supersedes: previous?.id || null,
+          version: row.version,
+        },
+        ip: req.ip,
+      });
+
+      if (previous) await recomputeItemState(item.id);
+
+      // An upload as far as the review side is concerned: something new has
+      // arrived against an item. No size, because there is no file (CW026 §3.5).
+      await queueUploadNotification(req, {
+        fileId: row.id,
+        files: [{
+          filename: label,
+          size: '',
+          item_ref: item.ref,
+          item_description_short: shortDescription(item.description),
+          description: previous ? `${explanation} (version ${row.version})` : explanation,
+        }],
+        itemRef: item.ref,
+      });
+
+      res.status(201).json(companyFileView({
+        ...row, related_item_ref: relatedItemRef, uploaded_by_name: req.user.name,
+      }));
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      if (err.code === UNIQUE_VIOLATION) {
+        return res.status(409).json({
+          error: 'This item already has a response waiting to be submitted. Edit or remove that one instead.',
+        });
+      }
+      console.error('[company] Statement error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// PATCH /company/statements/:fileId — change a STAGED response. The same
+// validation as recording one, and the label is rewritten with it, which is the
+// only way it ever changes (migration 022).
+router.patch(
+  '/statements/:fileId',
+  requireCompanyRole('company_admin', 'company_contributor'),
+  async (req, res) => {
+    const checked = validateStatementInput(req.body);
+    if (checked.error) return res.status(400).json({ error: checked.error });
+    const { reason, explanation, expectedDate, relatedItemId } = checked.value;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rows: [existing] } = await client.query(
+        `SELECT id, irl_item_id FROM company_files
+          WHERE id = $1 AND company_id = $2 AND kind = 'statement'
+            AND upload_state = 'staged' AND deleted_at IS NULL
+          FOR UPDATE`,
+        [req.params.fileId, req.company.id]
+      );
+      if (!existing) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({
+          error: 'Response not found, or it has already been submitted and can no longer be edited',
+        });
+      }
+
+      let relatedItemRef = null;
+      if (reason === 'provided_elsewhere') {
+        const related = await relatedItemCheck(client, {
+          relatedItemId, itemId: existing.irl_item_id, companyId: req.company.id,
+        });
+        if (related.error) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: related.error });
+        }
+        relatedItemRef = related.ref;
+      }
+
+      const label = statementLabel({ reason, expectedDate, relatedItemRef });
+      const { rows: [row] } = await client.query(
+        `UPDATE company_files
+            SET statement_reason = $3, expected_date = $4, related_item_id = $5,
+                description = $6, filename = $7
+          WHERE id = $1 AND company_id = $2
+          RETURNING *`,
+        [existing.id, req.company.id, reason, expectedDate, relatedItemId, explanation, label]
+      );
+
+      await client.query('COMMIT');
+
+      await logAudit({
+        action: 'company_statement.edited',
+        userId: req.user.sub,
+        resource: 'company_file',
+        resourceId: row.id,
+        detail: { companyId: req.company.id, kind: 'statement', reason },
+        ip: req.ip,
+      });
+
+      res.json(companyFileView({ ...row, related_item_ref: relatedItemRef }));
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error('[company] Edit statement error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// PATCH /company/files/:fileId — edit the description, STAGED only
+// ---------------------------------------------------------------------------
+router.patch(
+  '/files/:fileId',
+  requireCompanyRole('company_admin', 'company_contributor'),
+  async (req, res) => {
+    const { description } = req.body;
+    if (!description || !description.trim()) {
+      return res.status(400).json({ error: 'A description is required for every file' });
+    }
+
+    try {
+      // Files only. A response's description is its formal explanation, with a
+      // minimum length and a label rewritten beside it, so it is edited through
+      // PATCH /company/statements/:fileId and nowhere else.
+      const { rows: [row] } = await pool.query(
+        `UPDATE company_files SET description = $3
+         WHERE id = $1 AND company_id = $2
+           AND upload_state = 'staged' AND deleted_at IS NULL
+           AND kind = 'file'
+         RETURNING *`,
+        [req.params.fileId, req.company.id, description.trim()]
+      );
+      if (!row) {
+        const { rows: [other] } = await pool.query(
+          `SELECT kind FROM company_files WHERE id = $1 AND company_id = $2`,
+          [req.params.fileId, req.company.id]
+        );
+        if (isStatement(other)) {
+          return res.status(409).json({ error: 'A response is edited with the response form, not here.' });
+        }
+        return res.status(404).json({
+          error: 'File not found, or it has already been submitted and can no longer be edited',
+        });
+      }
+
+      await logAudit({
+        action: 'company_file.description_edited',
+        userId: req.user.sub,
+        resource: 'company_file',
+        resourceId: row.id,
+        detail: { companyId: req.company.id },
+        ip: req.ip,
+      });
+
+      res.json(companyFileView(row));
+    } catch (err) {
+      console.error('[company] Edit description error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// DELETE /company/files/:fileId — STAGED only
+// ---------------------------------------------------------------------------
+router.delete(
+  '/files/:fileId',
+  requireCompanyRole('company_admin', 'company_contributor'),
+  async (req, res) => {
+    try {
+      const { rows: [row] } = await pool.query(
+        `UPDATE company_files SET deleted_at = NOW()
+         WHERE id = $1 AND company_id = $2
+           AND upload_state = 'staged' AND deleted_at IS NULL
+         RETURNING *`,
+        [req.params.fileId, req.company.id]
+      );
+      if (!row) {
+        return res.status(404).json({
+          error: 'File not found, or it has already been submitted and can no longer be removed',
+        });
+      }
+
+      // Soft delete only. The object stays in the bucket and the row stays in
+      // the table so the audit trail still resolves.
+      await logAudit({
+        action: 'company_file.deleted_staged',
+        userId: req.user.sub,
+        resource: 'company_file',
+        resourceId: row.id,
+        detail: { companyId: req.company.id, filename: row.filename, kind: row.kind || 'file' },
+        ip: req.ip,
+      });
+
+      res.json({ message: 'File removed' });
+    } catch (err) {
+      console.error('[company] Delete staged error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// GET /company/staged
+// ---------------------------------------------------------------------------
+router.get('/staged', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT f.*, u.display_name AS uploaded_by_name,
+              i.ref AS item_ref, i.section AS item_section, i.description AS item_description,
+              ri.ref AS related_item_ref
+       FROM company_files f
+       JOIN users u ON u.id = f.uploaded_by
+       LEFT JOIN company_irl_items i ON i.id = f.irl_item_id
+       LEFT JOIN company_irl_items ri ON ri.id = f.related_item_id AND ri.company_id = f.company_id
+       WHERE f.company_id = $1 AND f.upload_state = 'staged' AND f.deleted_at IS NULL
+       ORDER BY i.sort_order NULLS LAST, f.created_at`,
+      [req.company.id]
+    );
+
+    res.json(rows.map((f) => ({
+      ...companyFileView(f),
+      itemRef: f.item_ref,
+      itemSection: f.item_section,
+      itemDescription: f.item_description,
+    })));
+  } catch (err) {
+    console.error('[company] Staged list error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /company/submit — formal submission, company_admin only
+//
+// One accountable individual per submission. Atomic: every named file moves or
+// none does, so a partial submission can never produce a receipt that lists
+// files the reviewer cannot see.
+// ---------------------------------------------------------------------------
+router.post('/submit', requireCompanyRole('company_admin'), async (req, res) => {
+  const { fileIds } = req.body;
+
+  if (!Array.isArray(fileIds) || fileIds.length === 0) {
+    return res.status(400).json({ error: 'Select at least one file to submit' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Lock exactly the rows named, scoped to this company and still staged.
+    const { rows: files } = await client.query(
+      `SELECT * FROM company_files
+       WHERE id = ANY($1::uuid[]) AND company_id = $2
+         AND upload_state = 'staged' AND deleted_at IS NULL
+       FOR UPDATE`,
+      [fileIds, req.company.id]
+    );
+
+    // All or nothing. A file that belongs to another company, is already
+    // submitted or has been removed fails the whole batch rather than being
+    // quietly dropped from a receipt the company is about to rely on.
+    if (files.length !== fileIds.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'One or more of the selected files is no longer available to submit. '
+             + 'Refresh the page and try again.',
+      });
+    }
+
+    const receiptRef = await nextReceiptRef(client);
+
+    const { rows: [batch] } = await client.query(
+      `INSERT INTO submission_batches (company_id, submitted_by, receipt_ref)
+       VALUES ($1, $2, $3) RETURNING *`,
+      [req.company.id, req.user.sub, receiptRef]
+    );
+
+    await client.query(
+      `UPDATE company_files
+       SET upload_state = 'submitted', status = 'received', batch_id = $2
+       WHERE id = ANY($1::uuid[])`,
+      [files.map((f) => f.id), batch.id]
+    );
+
+    // Opening status history for each file, so 'received' has a timestamp and
+    // an actor like every later change does.
+    for (const f of files) {
+      await client.query(
+        `INSERT INTO file_status_history (file_id, status, set_by) VALUES ($1, 'received', $2)`,
+        [f.id, req.user.sub]
+      );
+    }
+
+    // Retire the versions these files replace.
+    //
+    // At submission and not at upload, because a staged replacement is not a
+    // submission: the company can still withdraw it, and retiring the old
+    // version at upload would clear a reviewer's flag on the strength of a file
+    // nobody has sent yet.
+    //
+    // Only a SUBMITTED predecessor is retired. A staged one is left alone and
+    // stays in the staged list, which is a known rough edge rather than an
+    // oversight (HANDOVER-CW010 §3, out of scope).
+    //
+    // Note what this means and say it plainly: a company action can clear a
+    // reviewer's 'attention_needed'. That is intended. The replacement enters at
+    // 'received', so the item derives back to 'received' and returns to the
+    // review queue rather than jumping to 'completed' — no reviewer decision is
+    // erased, the request is simply put back in front of them against the file
+    // that now answers it.
+    const retired = [];
+    for (const f of files.filter((r) => r.supersedes)) {
+      // Read first, then update. An UPDATE ... RETURNING would hand back the new
+      // status, and the status being left behind is the one worth recording.
+      const { rows: [previous] } = await client.query(
+        `SELECT id, irl_item_id, filename, status FROM company_files
+          WHERE id = $1 AND company_id = $2
+            AND upload_state = 'submitted'
+            AND status <> 'superseded'
+            AND deleted_at IS NULL
+          FOR UPDATE`,
+        [f.supersedes, req.company.id]
+      );
+      if (!previous) continue;
+
+      await client.query(
+        `UPDATE company_files SET status = 'superseded' WHERE id = $1`,
+        [previous.id]
+      );
+      await client.query(
+        `INSERT INTO file_status_history (file_id, status, note, set_by)
+         VALUES ($1, 'superseded', $2, $3)`,
+        [previous.id, `Replaced by version ${f.version}: ${f.filename}`, req.user.sub]
+      );
+      retired.push({ ...previous, replacedBy: f.id, replacedByVersion: f.version });
+    }
+
+    // The receipt and the notice to Taranis, both inside the transaction.
+    //
+    // This is the message that matters most on the company side: the approved
+    // wording calls it "the formal record of the submission" and tells the
+    // company to keep it with their transaction papers. Queueing it here means
+    // it cannot describe a submission that rolled back, and cannot be lost if
+    // the process dies immediately after committing one.
+    const submittedItemIds = [...new Set(files.map((f) => f.irl_item_id).filter(Boolean))];
+    const { rows: itemRows } = submittedItemIds.length
+      ? await client.query(
+        `SELECT id, ref, description FROM company_irl_items
+          WHERE id = ANY($1::uuid[]) AND company_id = $2`,
+        [submittedItemIds, req.company.id]
+      )
+      : { rows: [] };
+    const itemsById = new Map(itemRows.map((i) => [i.id, i]));
+
+    const receiptFiles = files.map((f) => ({
+      filename: f.filename,
+      item_ref: itemsById.get(f.irl_item_id)?.ref || '',
+      item_description_short: shortDescription(itemsById.get(f.irl_item_id)?.description),
+      description: f.description,
+    }));
+
+    await queue(client, {
+      template: 'submission-receipt',
+      // The submitting company_admin only. The approved template header also
+      // names opted-in company users, but no notification preference exists in
+      // the schema and none is scoped for Phase 1b; the cc moves with
+      // preferences to Phase 2. Raised for Cowork in HANDOVER-C011 §3.2.
+      recipient: req.user.email,
+      payload: {
+        first_name: firstNameOf(req.user.name),
+        company_name: req.company.legalName,
+        submitted_at_utc: formatDateTimeUtc(batch.submitted_at),
+        receipt_ref: receiptRef,
+        file_count: files.length,
+        files: receiptFiles,
+        company_receipts_url: companyReceiptsUrl(),
+      },
+    });
+
+    await queue(client, {
+      template: 'submission-notification',
+      recipient: adminRecipient(),
+      payload: {
+        submitter_name: req.user.name || req.user.email,
+        company_name: req.company.legalName,
+        receipt_ref: receiptRef,
+        file_count: files.length,
+        item_count: submittedItemIds.length,
+        admin_review_url: adminReviewUrl(),
+      },
+    });
+
+    await client.query('COMMIT');
+
+    // Item states are derived outside the transaction: they are a projection of
+    // what was just committed, and a failure here must not undo a submission
+    // the company has already been told about.
+    //
+    // The retired files' items are folded in as well. In practice `/replace`
+    // copies the predecessor's item onto the new version so these are the same
+    // ids, but deriving the set from what actually changed beats relying on that
+    // staying true.
+    const itemIds = [...new Set(
+      [...files, ...retired].map((f) => f.irl_item_id).filter(Boolean)
+    )];
+    for (const itemId of itemIds) await recomputeItemState(itemId);
+
+    // Every status change lands in audit_log as well as in file_status_history
+    // (migration 013). This one is made by the system on the company's behalf
+    // rather than by a reviewer, which is a reason to record it, not to skip it.
+    for (const r of retired) {
+      await logAudit({
+        action: 'company_file.superseded',
+        userId: req.user.sub,
+        resource: 'company_file',
+        resourceId: r.id,
+        detail: {
+          companyId: req.company.id,
+          from: r.status,
+          replacedBy: r.replacedBy,
+          version: r.replacedByVersion,
+          receiptRef,
+        },
+        ip: req.ip,
+      });
+    }
+
+    await logAudit({
+      action: 'company_batch.submitted',
+      userId: req.user.sub,
+      resource: 'submission_batch',
+      resourceId: batch.id,
+      detail: {
+        companyId: req.company.id,
+        receiptRef,
+        fileCount: files.length,
+        files: files.map((f) => ({
+          filename: f.filename, description: f.description, kind: f.kind || 'file',
+        })),
+      },
+      ip: req.ip,
+    });
+
+    // The receipt is also emailed (queued above, inside the transaction) and is
+    // available again from GET /company/receipts; Taranis sees the batch on the
+    // review queue and is notified per submission.
+    res.status(201).json({
+      receiptRef: batch.receipt_ref,
+      submittedAt: batch.submitted_at,
+      submittedBy: req.user.name,
+      files: files.map((f) => ({
+        id: f.id,
+        filename: f.filename,
+        description: f.description,
+        kind: f.kind || 'file',
+      })),
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[company] Submit error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /company/receipts
+// ---------------------------------------------------------------------------
+router.get('/receipts', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT b.*, u.display_name AS submitted_by_name,
+              (SELECT COUNT(*) FROM company_files f WHERE f.batch_id = b.id) AS file_count
+       FROM submission_batches b
+       JOIN users u ON u.id = b.submitted_by
+       WHERE b.company_id = $1
+       ORDER BY b.submitted_at DESC`,
+      [req.company.id]
+    );
+
+    res.json(rows.map((b) => ({
+      id: b.id,
+      receiptRef: b.receipt_ref,
+      submittedAt: b.submitted_at,
+      submittedBy: b.submitted_by_name,
+      fileCount: Number(b.file_count),
+    })));
+  } catch (err) {
+    console.error('[company] Receipts error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /company/receipts/:id — the printable receipt
+// ---------------------------------------------------------------------------
+router.get('/receipts/:id', async (req, res) => {
+  try {
+    const { rows: [batch] } = await pool.query(
+      `SELECT b.*, u.display_name AS submitted_by_name, u.email AS submitted_by_email
+       FROM submission_batches b
+       JOIN users u ON u.id = b.submitted_by
+       WHERE b.id = $1 AND b.company_id = $2`,
+      [req.params.id, req.company.id]
+    );
+    if (!batch) return res.status(404).json({ error: 'Receipt not found' });
+
+    const { rows: files } = await pool.query(
+      `SELECT f.id, f.filename, f.description, f.size_bytes, f.created_at,
+              f.kind, f.statement_reason, f.expected_date, f.related_item_id,
+              i.ref AS item_ref, i.section AS item_section,
+              ri.ref AS related_item_ref
+       FROM company_files f
+       LEFT JOIN company_irl_items i ON i.id = f.irl_item_id
+       LEFT JOIN company_irl_items ri ON ri.id = f.related_item_id AND ri.company_id = f.company_id
+       WHERE f.batch_id = $1
+       ORDER BY i.sort_order NULLS LAST, f.filename`,
+      [batch.id]
+    );
+
+    res.json({
+      id: batch.id,
+      receiptRef: batch.receipt_ref,
+      // UTC, because the receipt is a record both sides refer back to and the
+      // two sides are not in the same time zone.
+      submittedAt: batch.submitted_at,
+      submittedBy: batch.submitted_by_name,
+      submittedByEmail: batch.submitted_by_email,
+      companyName: req.company.legalName,
+      files: files.map((f) => ({
+        id: f.id,
+        filename: f.filename,
+        description: f.description,
+        ...statementFields(f),
+        uploadedAt: f.created_at,
+        itemRef: f.item_ref,
+        itemSection: f.item_section,
+      })),
+    });
+  } catch (err) {
+    console.error('[company] Receipt detail error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Shared documents — what Taranis has published to this company
+//
+// STRICTLY READ-ONLY. There is no publish, no withdraw, no edit and no delete
+// on this side of the boundary, and no route below writes to
+// `company_shared_files` at all. All three company roles can list and download,
+// per code brief §3.2: a viewer who cannot upload can still need to read what
+// Taranis has sent, so there is no `requireCompanyRole` here.
+//
+// Scope is `req.company.id` from the JWT claim, as everywhere else in this file.
+// Withdrawn rows are filtered in the SQL rather than in the response shaping, so
+// a withdrawn document cannot reach the company through a shaping bug.
+// ---------------------------------------------------------------------------
+router.get('/shared-files', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT s.id, s.title, s.description, s.filename, s.size_bytes, s.content_type,
+              s.published_at, u.display_name AS published_by_name
+       FROM company_shared_files s
+       JOIN users u ON u.id = s.published_by
+       WHERE s.company_id = $1 AND s.withdrawn_at IS NULL
+       ORDER BY s.published_at DESC`,
+      [req.company.id]
+    );
+    res.json(rows.map(companySharedView));
+  } catch (err) {
+    console.error('[company] Shared documents error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /company/shared-files/:id/download
+ *
+ * The lookup is `WHERE id = $1 AND company_id = $2 AND withdrawn_at IS NULL`,
+ * so a guessed id belonging to another company, or a withdrawn document,
+ * returns the same 404 as one that does not exist. No id the caller supplies is
+ * ever used as scope.
+ *
+ * Auth is `requireAuth` + `requireCompany()` at the router mount and nothing
+ * else: this route does not re-implement any part of it, so the MFA check, the
+ * role check, the membership re-read and the company-status check all apply
+ * here exactly as they do to every other route in this file. That includes the
+ * `?token=` query form, which `readBearer` folds into the Authorization header
+ * before `requireAuth` runs, rather than being a second auth path.
+ */
+router.get('/shared-files/:id/download', async (req, res) => {
+  try {
+    const { rows: [row] } = await pool.query(
+      `SELECT * FROM company_shared_files
+       WHERE id = $1 AND company_id = $2 AND withdrawn_at IS NULL`,
+      [req.params.id, req.company.id]
+    );
+    if (!row) return res.status(404).json({ error: 'Document not found' });
+
+    // The same rule as every other download on the platform, from the same
+    // function: infected is never served, clean always is, and unscanned is
+    // served only while no scanner is configured. See services/company-shared.js
+    // for why Taranis-originated files go through it at all.
+    const decision = downloadDecision(row.scan_state);
+    if (!decision.allowed) {
+      return res.status(409).json({
+        error: 'This document is not available at the moment. Please contact Taranis.',
+      });
+    }
+
+    const storage = await getStorage();
+    let object;
+    try {
+      object = await storage.get(row.s3_key);
+    } catch (err) {
+      if (err instanceof StorageNotFoundError) {
+        return res.status(404).json({ error: 'This document is no longer available' });
+      }
+      throw err;
+    }
+
+    await logAudit({
+      action: 'company_shared.downloaded',
+      userId: req.user.sub,
+      resource: 'company_shared_file',
+      resourceId: row.id,
+      detail: {
+        companyId: req.company.id,
+        title: row.title,
+        filename: row.filename,
+        by: 'company',
+      },
+      ip: req.ip,
+    });
+
+    res.setHeader('X-Taranis-Scan-State', row.scan_state);
+    res.setHeader('Content-Type', row.content_type || 'application/octet-stream');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${contentDispositionFilename(row.filename)}"`
+    );
+    if (object.contentLength != null) res.setHeader('Content-Length', object.contentLength);
+
+    object.body.on('error', (streamErr) => {
+      console.error('[company] Shared download stream error:', streamErr.message);
+      res.destroy(streamErr);
+    });
+    object.body.pipe(res);
+  } catch (err) {
+    console.error('[company] Shared download error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /company/team — members of this company
+// ---------------------------------------------------------------------------
+router.get('/team', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT cu.id, cu.company_role, cu.is_primary, cu.approved_by, cu.deactivated_at,
+              cu.created_at, cu.domain_matched,
+              u.id AS user_id, u.display_name, u.email, u.status
+       FROM company_users cu
+       JOIN users u ON u.id = cu.user_id
+       WHERE cu.company_id = $1
+       ORDER BY cu.is_primary DESC, u.display_name`,
+      [req.company.id]
+    );
+
+    res.json(rows.map((m) => ({
+      membershipId: m.id,
+      userId: m.user_id,
+      displayName: m.display_name,
+      email: m.email,
+      companyRole: m.company_role,
+      isPrimary: m.is_primary,
+      accountStatus: m.status,
+      approved: !!m.approved_by,
+      deactivatedAt: m.deactivated_at,
+      joinedAt: m.created_at,
+    })));
+  } catch (err) {
+    console.error('[company] Team error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /company/nominations — company_admin nominates a colleague
+//
+// The domain check FLAGS a mismatch for the Taranis approval screen. It does
+// not block: a genuine adviser on another domain is common and refusing them
+// outright would push the exchange back to email.
+// ---------------------------------------------------------------------------
+router.post('/nominations', requireCompanyRole('company_admin'), async (req, res) => {
+  const { email, displayName, companyRole, note } = req.body;
+
+  if (!email || !displayName) {
+    return res.status(400).json({ error: 'An email address and a name are required' });
+  }
+  const validRoles = ['company_admin', 'company_contributor', 'company_viewer'];
+  if (companyRole && !validRoles.includes(companyRole)) {
+    return res.status(400).json({ error: 'Invalid role' });
+  }
+
+  const normalised = email.toLowerCase().trim();
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: [company] } = await client.query(
+      `SELECT email_domains FROM companies WHERE id = $1`,
+      [req.company.id]
+    );
+    const domain = normalised.split('@')[1] || '';
+    const domains = company.email_domains || [];
+    const domainMatched = domains.length === 0
+      ? null
+      : domains.some((d) => d.toLowerCase() === domain);
+
+    const { rows: [user] } = await client.query(
+      `INSERT INTO users (email, display_name, role, status)
+       VALUES ($1, $2, 'company', 'invited')
+       ON CONFLICT (email) DO UPDATE SET display_name = EXCLUDED.display_name
+       RETURNING id, role`,
+      [normalised, displayName.trim()]
+    );
+
+    // A nomination for someone who already holds a fund-side role is refused
+    // rather than silently converted: changing a live investor into a company
+    // user would take away their fund access.
+    if (user.role !== 'company') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'That email address already belongs to a Taranis account. '
+             + 'Please contact Taranis directly.',
+      });
+    }
+
+    const { rows: [membership] } = await client.query(
+      `INSERT INTO company_users
+         (company_id, user_id, company_role, nominated_by, nomination_note, domain_matched)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (company_id, user_id) DO NOTHING
+       RETURNING id`,
+      [
+        req.company.id, user.id, companyRole || 'company_contributor',
+        req.user.sub, note || null, domainMatched,
+      ]
+    );
+
+    if (!membership) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'That person is already on your team' });
+    }
+
+    // Tell Taranis there is something waiting. Before Phase 1b a nomination sat
+    // in the pipeline until somebody happened to look at the nominations list,
+    // which is the gap HANDOVER-C006 found and the Users page half-closed.
+    await queue(client, {
+      template: 'nomination-pending',
+      recipient: adminRecipient(),
+      payload: {
+        nominee_name: displayName.trim(),
+        nominee_email: normalised,
+        nominator_name: req.user.name || req.user.email,
+        company_name: req.company.legalName,
+        proposed_role: COMPANY_ROLE_LABELS[companyRole || 'company_contributor'],
+        domain_check_result: domainCheckResult(domainMatched, domain),
+        admin_nomination_url: adminNominationUrl(req.company.id),
+      },
+    });
+
+    await client.query('COMMIT');
+
+    await logAudit({
+      action: 'company_user.nominated',
+      userId: req.user.sub,
+      resource: 'company',
+      resourceId: req.company.id,
+      detail: { nominatedEmail: normalised, companyRole: companyRole || 'company_contributor', domainMatched },
+      ip: req.ip,
+    });
+
+    res.status(201).json({
+      message: 'Nomination submitted. Taranis will review it and issue an invitation.',
+      domainMatched,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[company] Nomination error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /company/users/:userId/deactivate — a company_admin removes a leaver
+// ---------------------------------------------------------------------------
+router.patch('/users/:userId/deactivate', requireCompanyRole('company_admin'), async (req, res) => {
+  if (req.params.userId === req.user.sub) {
+    return res.status(400).json({ error: 'You cannot remove your own access' });
+  }
+
+  try {
+    const { rows: [row] } = await pool.query(
+      `UPDATE company_users
+       SET deactivated_at = NOW(), deactivated_by = $3
+       WHERE user_id = $1 AND company_id = $2 AND deactivated_at IS NULL
+       RETURNING id, user_id`,
+      [req.params.userId, req.company.id, req.user.sub]
+    );
+    if (!row) return res.status(404).json({ error: 'Team member not found' });
+
+    // Immediate lockout, not lockout at token expiry.
+    const { revokeAllUserTokens } = await import('../services/auth.js');
+    await revokeAllUserTokens(row.user_id);
+
+    await logAudit({
+      action: 'company_user.deactivated',
+      userId: req.user.sub,
+      resource: 'company',
+      resourceId: req.company.id,
+      detail: { targetUserId: row.user_id, by: 'company_admin' },
+      ip: req.ip,
+    });
+
+    res.json({ message: 'Access removed' });
+  } catch (err) {
+    console.error('[company] Deactivate error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+export default router;

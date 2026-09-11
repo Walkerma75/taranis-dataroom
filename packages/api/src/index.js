@@ -2,11 +2,18 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import argon2 from 'argon2';
 import { pool, testConnection } from './db.js';
+import { autoMigrate, autoSeed } from './db/bootstrap.js';
+import { getStorage } from './services/storage.js';
+import { getScanner } from './services/scanner.js';
+import { getMailer } from './services/email.js';
+import { startOutboxWorker } from './services/notifications.js';
+import { startDigestWorker, digestConfigFromEnv } from './services/dd-digest.js';
+import { startDigestFlushWorker, sessionDigestConfig } from './services/notification-digests.js';
+import { startSesEventConsumer } from './services/ses-events.js';
+import { assertConfigured as assertPortalUrl } from './services/links.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,6 +25,14 @@ import documentRoutes from './routes/documents.js';
 import grantRoutes from './routes/grants.js';
 import auditRoutes from './routes/audit.js';
 import noticeRoutes from './routes/notices.js';
+import companyRoutes, {
+  reviewQueueRouter,
+  companyFilesRouter,
+  irlTemplatesRouter,
+} from './routes/companies.js';
+import companyPortalRoutes from './routes/company-portal.js';
+import ddSummaryRoutes from './routes/dd-summary.js';
+import maintenanceRoutes from './routes/maintenance.js';
 
 const app = express();
 const PORT = process.env.API_PORT || 4000;
@@ -46,10 +61,23 @@ const authLimiter = rateLimit({
 app.get('/health', async (_req, res) => {
   try {
     const result = await pool.query('SELECT NOW() AS server_time');
+    const storage = await getStorage();
+    const scanner = getScanner();
+    const mailer = await getMailer();
     res.json({
       status: 'ok',
       service: 'taranis-dataroom-api',
       database: 'connected',
+      // Backend kinds only — never the bucket name or a host, this endpoint is
+      // public. `scanner: "stub"` means company uploads are NOT being scanned
+      // and stay quarantined; it is reported here for the same reason storage
+      // is, so a task running without protection is visible rather than assumed.
+      storage: storage.kind,
+      scanner: scanner.kind,
+      // Same reasoning again: `email: "log"` on a production task means
+      // invitations and receipts are being queued and then printed to the log
+      // instead of sent, which otherwise looks identical to working.
+      email: mailer.kind,
       serverTime: result.rows[0].server_time,
     });
   } catch (err) {
@@ -77,6 +105,23 @@ app.use('/grants', grantRoutes);
 app.use('/audit', auditRoutes);
 app.use('/notices', noticeRoutes);
 
+// Company DD portal. `/company/*` is the counterparty's own workspace and is
+// the only mount that accepts role 'company'; everything else above and below
+// rejects it explicitly.
+app.use('/company', companyPortalRoutes);
+app.use('/companies', companyRoutes);
+app.use('/company-files', companyFilesRouter);
+app.use('/review-queue', reviewQueueRouter);
+app.use('/irl-templates', irlTemplatesRouter);
+
+// The dashboard's due diligence panel and the nav badge. Admin-gated inside the
+// router, and narrower than the two mounts above on purpose: see its header.
+app.use('/dd-summary', ddSummaryRoutes);
+
+// Operator-only actions that need the task's own credentials (see the module
+// header for why these are not scripts). Admin-gated inside the router.
+app.use('/maintenance', maintenanceRoutes);
+
 // ---------------------------------------------------------------------------
 // Error handler
 // ---------------------------------------------------------------------------
@@ -86,114 +131,6 @@ app.use((err, _req, res, _next) => {
 });
 
 // ---------------------------------------------------------------------------
-// Auto-migrate & seed on startup
-// ---------------------------------------------------------------------------
-async function autoMigrate() {
-  const MIGRATIONS_DIR = path.join(__dirname, 'db', 'migrations');
-
-  // Ensure _migrations table
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      run_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  const { rows } = await pool.query('SELECT name FROM _migrations ORDER BY name');
-  const completed = new Set(rows.map((r) => r.name));
-
-  const files = fs
-    .readdirSync(MIGRATIONS_DIR)
-    .filter((f) => f.endsWith('.sql'))
-    .sort();
-
-  let ran = 0;
-  for (const file of files) {
-    if (completed.has(file)) continue;
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-    console.log(`[migrate] Running ${file}...`);
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(sql);
-      await client.query('INSERT INTO _migrations (name) VALUES ($1)', [file]);
-      await client.query('COMMIT');
-      ran++;
-      console.log(`[migrate] ✓ ${file}`);
-    } catch (err) {
-      await client.query('ROLLBACK');
-      console.error(`[migrate] ✗ ${file}:`, err.message);
-      throw err;
-    } finally {
-      client.release();
-    }
-  }
-
-  if (ran === 0) {
-    console.log('[migrate] All migrations already applied.');
-  } else {
-    console.log(`[migrate] Applied ${ran} migration(s).`);
-  }
-}
-
-async function autoSeed() {
-  // Check if admin user already exists — if so, this is a no-op.
-  // Never update an existing admin's password from here, even if
-  // SEED_ADMIN_PASSWORD happens to be set.
-  const { rows } = await pool.query("SELECT id FROM users WHERE email = 'admin@taraniscapital.com'");
-  if (rows.length > 0) {
-    console.log('[seed] Admin user already exists — skipping seed.');
-    return;
-  }
-
-  const password = process.env.SEED_ADMIN_PASSWORD;
-  if (!password) {
-    console.error('[seed] No admin user found and SEED_ADMIN_PASSWORD is not set.');
-    console.error('[seed] Set SEED_ADMIN_PASSWORD (e.g. via AWS Secrets Manager) and restart,');
-    console.error('[seed] or create the admin user directly in the database, then restart.');
-    throw new Error('SEED_ADMIN_PASSWORD required for first-boot admin creation');
-  }
-
-  console.log('[seed] No admin user found — creating initial admin account.');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    const passwordHash = await argon2.hash(password, {
-      type: argon2.argon2id,
-      memoryCost: 65536,
-      timeCost: 3,
-      parallelism: 4,
-    });
-
-    const adminCaps = JSON.stringify({
-      canManageUsers: true,
-      canManageFunds: true,
-      canUploadDocuments: true,
-      canViewAudit: true,
-      canDownloadDocuments: true,
-      canViewDocuments: true,
-    });
-
-    await client.query(`
-      INSERT INTO users (email, display_name, password_hash, role, status, capabilities)
-      VALUES ('admin@taraniscapital.com', 'Mark Walker', $1, 'admin', 'active', $2::jsonb)
-      ON CONFLICT (email) DO NOTHING
-    `, [passwordHash, adminCaps]);
-
-    await client.query('COMMIT');
-    console.log('[seed] Admin user created.');
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('[seed] Failed:', err.message);
-    throw err;
-  } finally {
-    client.release();
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
 (async () => {
@@ -201,8 +138,89 @@ async function autoSeed() {
     await testConnection();
     await autoMigrate();
     await autoSeed();
+
+    // Say which store documents will be written to, so a misconfigured
+    // deployment is obvious in the task logs rather than at first upload.
+    const storage = await getStorage();
+    console.log(`[storage] Documents backed by ${storage.describe()}`);
+
+    // Same reasoning as the storage line: a task running an unscanned upload
+    // path must be visible in the logs, never assumed. With the Phase 1a stub
+    // this prints a warning on every boot, deliberately.
+    const scanner = getScanner();
+    if (scanner.kind === 'stub') {
+      console.warn(`[scanner] ${scanner.describe()}`);
+      console.warn(
+        '[scanner] Company uploads will be accepted and served WITHOUT being ' +
+        'scanned. This is an accepted beta risk, not a defect (HANDOVER-C004 ' +
+        '§3.1), and the trigger to revisit it is widening the client cohort. ' +
+        'See MIGRATION-INVENTORY.md §12.'
+      );
+    } else {
+      console.log(`[scanner] Company uploads scanned by ${scanner.describe()}`);
+    }
+
+    // Before anything can be sent: every template links back to the portal, and
+    // in production a missing PORTAL_URL would put a dead link in the first
+    // message a counterparty ever receives from us. This throws rather than
+    // warns, so the task fails to start instead of sending broken invitations.
+    assertPortalUrl();
+
+    const mailer = await getMailer();
+    if (mailer.kind === 'log') {
+      console.warn(`[email] ${mailer.describe()}`);
+      console.warn(
+        '[email] Notifications will be queued and then printed rather than '
+        + 'sent. On a production task this means invitations and receipts are '
+        + 'NOT reaching anyone.'
+      );
+    } else {
+      console.log(`[email] ${mailer.describe()}`);
+    }
+
+    // The outbox drain. A plain interval in this process, per the code brief
+    // §4: no queue service, no scheduler, no second container.
+    startOutboxWorker();
+
+    // Session digests (HANDOVER-CW025). The timer that closes a sitting into
+    // one outbox row runs even when digests are switched off, so events
+    // recorded before the switch are still sent. Say which mode the routes are
+    // in, because the two produce very different inboxes.
+    const sessions = sessionDigestConfig();
+    if (sessions.enabled) {
+      console.log(
+        `[digests] On: status, upload and new-item emails are sent as one digest per sitting `
+        + `(quiet ${sessions.quietMinutes} min, maximum hold ${sessions.maxHoldMinutes} min).`
+      );
+    } else {
+      console.log(
+        '[digests] Off (NOTIFY_DIGEST_ENABLED is false): one email per event. '
+        + 'Digests already open will still be sent.'
+      );
+    }
+    startDigestFlushWorker();
+
+    // The daily outstanding-actions digest. Same arrangement as the outbox for
+    // the same reason, and off unless DD_DIGEST_ENABLED is set, which it is not
+    // until the wording is approved. Say which, so a task that is silently not
+    // sending it is visible in the logs rather than assumed to be working.
+    const digest = digestConfigFromEnv();
+    if (digest.enabled) {
+      console.log(
+        `[dd-digest] Enabled: one digest each weekday from ${digest.hourLocal}:00 `
+        + `at UTC+${digest.utcOffsetHours}, when anything is outstanding.`
+      );
+    } else {
+      console.log('[dd-digest] Disabled (DD_DIGEST_ENABLED is not "true"). No digest will be sent.');
+    }
+    startDigestWorker();
+
+    // Bounce and complaint ingestion. Does nothing and says so until
+    // SES_EVENTS_QUEUE_URL is set, which waits on the console work in
+    // HANDOVER-C011 §3.3.
+    await startSesEventConsumer();
   } catch (err) {
-    console.error('[startup] Failed to initialise database:', err.message);
+    console.error('[startup] Failed to initialise:', err.message);
     process.exit(1);
   }
 

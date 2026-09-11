@@ -1,10 +1,12 @@
-node_modules/
+node_modules
 dist/
 .env
 .env.*
+!.env.example
 uploads/*
 !uploads/.gitkeep
 *.log
 .DS_Store
-node_modules 
-node_modules 
+
+# Vite ESM-config temp files (auto-generated next to vite.config.js; never commit)
+vite.config.js.timestamp-*.mjs

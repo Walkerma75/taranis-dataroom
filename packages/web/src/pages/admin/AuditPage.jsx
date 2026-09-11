@@ -22,6 +22,35 @@ const actionColours = {
   'mfa.enabled': 'green',
   'password.changed': 'gold',
   'notice.sent': 'purple',
+  // Company DD portal. The filter list itself comes from /audit/actions, which
+  // is distinct actions actually in the log, so a new action becomes filterable
+  // the first time it is written. Only the colour needs adding here.
+  'company.created': 'blue',
+  'company.updated': 'orange',
+  'company.gate_recorded': 'gold',
+  'company.activated': 'green',
+  'company.suspended': 'orange',
+  'company.reinstated': 'green',
+  'company.offboarded': 'red',
+  'company.exported': 'cyan',
+  'company_user.invited': 'purple',
+  'company_user.nominated': 'purple',
+  'company_user.approved': 'green',
+  'company_user.role_changed': 'orange',
+  'company_user.deactivated': 'red',
+  'company_file.uploaded': 'blue',
+  'company_file.replaced': 'blue',
+  'company_file.description_edited': 'orange',
+  'company_file.deleted_staged': 'orange',
+  'company_file.status_changed': 'gold',
+  'company_file.downloaded': 'cyan',
+  'company_batch.submitted': 'green',
+  // Taranis to company. 'published' rather than the code brief's
+  // 'company_shared.uploaded': "uploaded" already means company to Taranis
+  // everywhere else in this list, and the direction is the whole point.
+  'company_shared.published': 'purple',
+  'company_shared.downloaded': 'cyan',
+  'company_shared.withdrawn': 'orange',
 };
 
 export default function AuditPage() {

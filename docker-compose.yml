@@ -33,6 +33,12 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
       JWT_SECRET: ${JWT_SECRET:-local-dev-secret-do-not-use-in-production}
+      # Document storage. In production these are set on the ECS task
+      # definition (S3_BUCKET=taranis-dataroom-documents-prod, eu-west-2) and
+      # credentials come from the task role. Left empty locally, the API falls
+      # back to local disk — see packages/api/src/services/storage.js.
+      AWS_REGION: ${AWS_REGION:-eu-west-2}
+      S3_BUCKET: ${S3_BUCKET:-}
     ports:
       - "4000:4000"
     volumes:
