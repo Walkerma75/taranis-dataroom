@@ -64,6 +64,7 @@ export default function WorkspacePage() {
             <Tag color={PRIORITY_COLOURS[item.priority]} style={{ color: '#fff', borderColor: 'transparent' }}>
               {PRIORITY_LABELS[item.priority]}
             </Tag>
+            {item.hasForm && <Tag>Form</Tag>}
             {item.submittedFiles > 0 && (
               <Text type="secondary">{item.submittedFiles} submitted</Text>
             )}

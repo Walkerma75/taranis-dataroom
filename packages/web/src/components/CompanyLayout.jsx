@@ -5,6 +5,7 @@ import {
   CloudUploadOutlined,
   FileProtectOutlined,
   FolderOpenOutlined,
+  FormOutlined,
   TeamOutlined,
   SettingOutlined,
   LogoutOutlined,
@@ -43,6 +44,9 @@ export default function CompanyLayout() {
     // Every company role can read what Taranis has shared, per code brief §3.2,
     // so this entry is not gated the way "Your team" is.
     { key: '/company/shared', icon: <FolderOpenOutlined />, label: 'From Taranis' },
+    // Standard forms to download, complete and upload against an item (CW027).
+    // Every company role, as above.
+    { key: '/company/forms', icon: <FormOutlined />, label: 'Forms' },
     ...(isCompanyAdmin
       ? [{ key: '/company/team', icon: <TeamOutlined />, label: 'Your team' }]
       : []),

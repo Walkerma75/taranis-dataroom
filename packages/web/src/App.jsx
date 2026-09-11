@@ -25,6 +25,7 @@ import AuditPage from './pages/admin/AuditPage.jsx';
 import PipelinePage from './pages/admin/PipelinePage.jsx';
 import CompanyDetailPage from './pages/admin/CompanyDetailPage.jsx';
 import ReviewQueuePage from './pages/admin/ReviewQueuePage.jsx';
+import AdminFormsPage from './pages/admin/FormsPage.jsx';
 
 // Company portal pages
 import WorkspacePage from './pages/company/WorkspacePage.jsx';
@@ -32,6 +33,7 @@ import ItemDetailPage from './pages/company/ItemDetailPage.jsx';
 import StagedSubmissionPage from './pages/company/StagedSubmissionPage.jsx';
 import ReceiptsPage from './pages/company/ReceiptsPage.jsx';
 import SharedDocumentsPage from './pages/company/SharedDocumentsPage.jsx';
+import FormsPage from './pages/company/FormsPage.jsx';
 import TeamPage from './pages/company/TeamPage.jsx';
 
 // Settings pages
@@ -63,6 +65,13 @@ function ProtectedRoute({ children }) {
 function CapRoute({ cap, children }) {
   const { user } = useAuth();
   if (!hasCap(user, cap)) return <Navigate to="/dashboard" replace />;
+  return children;
+}
+
+/** Admin only, on the role. Used for pages the API also gates on role 'admin'. */
+function AdminRoute({ children }) {
+  const { user } = useAuth();
+  if (user?.role !== 'admin') return <Navigate to="/dashboard" replace />;
   return children;
 }
 
@@ -132,6 +141,7 @@ function AppRoutes() {
         <Route path="/company/staged" element={<StagedSubmissionPage />} />
         <Route path="/company/receipts" element={<ReceiptsPage />} />
         <Route path="/company/shared" element={<SharedDocumentsPage />} />
+        <Route path="/company/forms" element={<FormsPage />} />
         <Route path="/company/team" element={<TeamPage />} />
       </Route>
 
@@ -159,6 +169,8 @@ function AppRoutes() {
         <Route path="/admin/companies" element={<PipelinePage />} />
         <Route path="/admin/companies/:companyId" element={<CompanyDetailPage />} />
         <Route path="/admin/review-queue" element={<ReviewQueuePage />} />
+        {/* Standard DD forms: admins only, and the API refuses everyone else (CW027). */}
+        <Route path="/admin/forms" element={<AdminRoute><AdminFormsPage /></AdminRoute>} />
       </Route>
 
       {/* Settings, available to both shells */}
